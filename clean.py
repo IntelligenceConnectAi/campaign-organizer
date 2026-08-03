@@ -420,7 +420,7 @@ def page_business_leads():
 
 # ── PAGE: REGARDING REPORTS ─────────────────────────────────────────────────
 def page_reports():
-    page_title("📊", "Guardrails Reports", "Campaign performance reporting — coming soon")
+    page_title("📊", "Regarding Reports", "Campaign performance reporting — coming soon")
     with st.container(border=True):
         st.markdown("# 🚧")
         st.markdown("#### Coming Soon")
@@ -484,7 +484,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 NAV_PAGES = [
     ("People Leads", "👤"),
     ("Business Leads", "🏢"),
-    ("Guardrails Reports", "📊"),
+    ("Regarding Reports", "📊"),
 ]
 
 if "current_page" not in st.session_state:
