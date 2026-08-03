@@ -183,6 +183,30 @@ def build_zip(channel_parts):
     buf.seek(0)
     return buf.getvalue()
 
+def step_header(num, icon, title, optional=False):
+    badge = f'<span class="badge-optional">optional</span>' if optional else ""
+    st.markdown(
+        f'''<div class="step-header">
+                <span class="step-num">{num}</span>
+                <span class="step-icon">{icon}</span>
+                <span class="step-title">{title}</span>
+                {badge}
+            </div>''',
+        unsafe_allow_html=True,
+    )
+
+def page_title(icon, title, subtitle):
+    st.markdown(
+        f'''<div class="page-hero">
+                <div class="page-hero-icon">{icon}</div>
+                <div>
+                    <div class="page-hero-title">{title}</div>
+                    <div class="page-hero-sub">{subtitle}</div>
+                </div>
+            </div>''',
+        unsafe_allow_html=True,
+    )
+
 def campaign_details_block(key_prefix):
     """Renders the 'Campaign Name' toggle + fields. Returns (add_name, month, year, state, deal, output_name)."""
     add_name = st.checkbox("Do you want to add Campaign Name?", key=f"{key_prefix}_toggle")
@@ -234,34 +258,29 @@ def run_channel_processing(df, tail, tag, dialer, sms, email, do_split, n_splits
 
 # ── PAGE: PEOPLE LEADS ──────────────────────────────────────────────────────
 def page_people_leads():
-    st.title("📋 Campaign Organizer — People Leads")
-    st.divider()
+    page_title("👤", "People Leads", "Upload, clean, and organize your people lead campaigns")
 
-    st.subheader("Step 1 — Upload Lead List")
-    files = st.file_uploader("📁 Upload one or more Excel files (.xlsx)",
-                              type=["xlsx"], accept_multiple_files=True, key="ppl_upload")
+    step_header(1, "📁", "Upload Lead List")
+    files = st.file_uploader("Upload one or more Excel files (.xlsx)",
+                              type=["xlsx"], accept_multiple_files=True, key="ppl_upload",
+                              label_visibility="collapsed")
     if files:
         st.success(f"✅ {len(files)} file(s) uploaded")
-    st.divider()
 
-    st.subheader("Step 2 — Campaign Details")
+    step_header(2, "🏷️", "Campaign Details")
     add_name, month, year, state, deal, out_name = campaign_details_block("ppl")
-    st.divider()
 
-    st.subheader("Step 3 — Marketing Process")
+    step_header(3, "📣", "Marketing Process")
     dialer, sms, email = marketing_process_block("ppl_mkt")
-    st.divider()
 
-    st.subheader("Step 4 — Properties / Seller Leads (optional)")
+    step_header(4, "🏠", "Properties / Seller Leads", optional=True)
     p_dialer, p_sms, p_email = marketing_process_block("ppl_prop")
-    st.divider()
 
-    st.subheader("Step 5 — Monthly Split (Optional)")
+    step_header(5, "🔀", "Monthly Split", optional=True)
     do_split = st.checkbox("🔀 Split output into multiple files", key="ppl_dosplit")
     n_splits = 1
     if do_split:
         n_splits = st.number_input("How many files to split into?", min_value=2, max_value=50, value=5, step=1, key="ppl_nsplits")
-    st.divider()
 
     mkt_selected  = dialer or sms or email
     prop_selected = p_dialer or p_sms or p_email
@@ -292,8 +311,7 @@ def page_people_leads():
         st.session_state.ppl_processed = True
 
     if st.session_state.get("ppl_processed"):
-        st.divider()
-        st.subheader("✅ Processing Complete!")
+        st.markdown('<div class="result-banner">✅ Processing Complete!</div>', unsafe_allow_html=True)
         st.info(f"📊 Total rows merged: **{st.session_state.ppl_total:,}**")
         st.info(f"📞 Original phone numbers: **{st.session_state.ppl_orig_phones:,}**")
         st.info(f"📧 Original emails: **{st.session_state.ppl_orig_emails:,}**")
@@ -307,8 +325,7 @@ def page_people_leads():
             for k, v in st.session_state.ppl_prop_counts.items():
                 st.success(f"{k.title()}: **{v:,}**")
 
-        st.divider()
-        st.subheader("⬇️ Downloads")
+        step_header("⬇", "📦", "Downloads")
         if st.session_state.get("ppl_mkt_zip"):
             st.download_button("⬇️ Download Marketing Process (ZIP)", data=st.session_state.ppl_mkt_zip,
                                 file_name=st.session_state.ppl_mkt_name, mime="application/zip",
@@ -333,106 +350,62 @@ def page_people_leads():
             st.warning("⚠️ Please select at least one output type (Marketing Process or Properties).")
 
 # ── PAGE: BUSINESS LEADS ────────────────────────────────────────────────────
-def page_business_leads():
-    st.title("📋 Campaign Organizer — Business Leads")
-    st.divider()
+def simple_merge_uploaded(files):
+    """Business Leads have a different column schema than People Leads —
+    no DNC-column drop, no phone/email normalization. Just merge as-is."""
+    frames = []
+    for uf in files:
+        df = pd.read_excel(uf, dtype=str)
+        frames.append(df)
+    merged = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    return merged
 
-    st.subheader("Step 1 — Upload Lead List")
-    files = st.file_uploader("📁 Upload one or more Excel files (.xlsx)",
-                              type=["xlsx"], accept_multiple_files=True, key="biz_upload")
+def page_business_leads():
+    page_title("🏢", "Business Leads", "Merge your business lead files and export in one click")
+
+    step_header(1, "📁", "Upload Lead List")
+    files = st.file_uploader("Upload one or more Excel files (.xlsx)",
+                              type=["xlsx"], accept_multiple_files=True, key="biz_upload",
+                              label_visibility="collapsed")
     if files:
         st.success(f"✅ {len(files)} file(s) uploaded")
-    st.divider()
 
-    st.subheader("Step 2 — Campaign Name")
+    step_header(2, "🏷️", "Campaign Name")
     add_name, month, year, state, deal, out_name = campaign_details_block("biz")
-    st.divider()
 
-    st.subheader("Optional — Marketing Process")
-    add_mkt = st.checkbox("Add Marketing Process (Dialer / AI Outbound, SMS, Email)?", key="biz_add_mkt")
-    dialer = sms = email = False
-    if add_mkt:
-        dialer, sms, email = marketing_process_block("biz_mkt")
-    st.divider()
-
-    st.subheader("Optional — Properties List")
-    add_prop = st.checkbox("Add Properties / Seller Leads List?", key="biz_add_prop")
-    p_dialer = p_sms = p_email = False
-    if add_prop:
-        p_dialer, p_sms, p_email = marketing_process_block("biz_prop")
-    st.divider()
-
-    st.subheader("Step 3 — Monthly Split (Optional)")
+    step_header(3, "🔀", "Monthly Split", optional=True)
     do_split = st.checkbox("🔀 Split output into multiple files", key="biz_dosplit")
     n_splits = 1
     if do_split:
         n_splits = st.number_input("How many files to split into?", min_value=2, max_value=50, value=5, step=1, key="biz_nsplits")
-    st.divider()
 
     details_ok = (state and year and deal and state.strip() and year.strip() and deal.strip()) if add_name else (out_name and out_name.strip())
     ready = files and details_ok
 
     if st.button("⚙️ Process Files", use_container_width=True, type="primary", disabled=not ready, key="biz_process"):
-        merged, orig_phones, orig_emails = merge_uploaded(files)
+        merged = simple_merge_uploaded(files)
         tail = get_tail(add_name, month, year, state, deal, out_name)
 
-        # Base "Leads" output — the cleaned/merged file itself, no dialer/sms/email unwinding
-        base_df = merged.copy()
+        # Business Leads output — just the merged file, tagged with campaign name, optionally split
         base_name_builder = lambda wk: build_campaign("LEADS", tail, wk=wk)
-        base_parts = split_parts(base_df, base_name_builder, int(n_splits), do_split)
+        base_parts = split_parts(merged, base_name_builder, int(n_splits), do_split)
         st.session_state.biz_base_zip  = build_zip({"LEADS": base_parts}) if base_parts else None
         st.session_state.biz_base_name = f"Business Leads Output - {tail}.zip"
-        st.session_state.biz_base_count = len(base_df)
-
-        mkt_parts, mkt_counts = ({}, {})
-        if add_mkt and (dialer or sms or email):
-            mkt_parts, mkt_counts = run_channel_processing(merged, tail, None, dialer, sms, email, do_split, int(n_splits))
-        st.session_state.biz_mkt_zip = build_zip(mkt_parts) if mkt_parts else None
-        st.session_state.biz_mkt_name = f"Marketing Process - {tail}.zip"
-        st.session_state.biz_mkt_counts = mkt_counts
-
-        prop_parts, prop_counts = ({}, {})
-        if add_prop and (p_dialer or p_sms or p_email):
-            props_df = filter_properties(merged)
-            prop_parts, prop_counts = run_channel_processing(props_df, tail, "PROPERTIES", p_dialer, p_sms, p_email, do_split, int(n_splits))
-        st.session_state.biz_prop_zip = build_zip(prop_parts) if prop_parts else None
-        st.session_state.biz_prop_name = f"Properties Seller Leads - {tail}.zip"
-        st.session_state.biz_prop_counts = prop_counts
+        st.session_state.biz_base_count = len(merged)
 
         st.session_state.biz_total = len(merged)
-        st.session_state.biz_orig_phones = orig_phones
-        st.session_state.biz_orig_emails = orig_emails
         st.session_state.biz_processed = True
 
     if st.session_state.get("biz_processed"):
-        st.divider()
-        st.subheader("✅ Processing Complete!")
+        st.markdown('<div class="result-banner">✅ Processing Complete!</div>', unsafe_allow_html=True)
         st.info(f"📊 Total rows merged: **{st.session_state.biz_total:,}**")
         st.success(f"📄 Business Leads Output rows: **{st.session_state.biz_base_count:,}**")
 
-        if st.session_state.get("biz_mkt_counts"):
-            st.markdown("**📋 Marketing Process:**")
-            for k, v in st.session_state.biz_mkt_counts.items():
-                st.success(f"{k.title()}: **{v:,}**")
-        if st.session_state.get("biz_prop_counts"):
-            st.markdown("**🏷️ Properties / Seller Leads:**")
-            for k, v in st.session_state.biz_prop_counts.items():
-                st.success(f"{k.title()}: **{v:,}**")
-
-        st.divider()
-        st.subheader("⬇️ Downloads")
+        step_header("⬇", "📦", "Downloads")
         if st.session_state.get("biz_base_zip"):
             st.download_button("⬇️ Download Business Leads Output (ZIP)", data=st.session_state.biz_base_zip,
                                 file_name=st.session_state.biz_base_name, mime="application/zip",
                                 use_container_width=True, type="primary", key="biz_dl_base")
-        if st.session_state.get("biz_mkt_zip"):
-            st.download_button("⬇️ Download Marketing Process (ZIP)", data=st.session_state.biz_mkt_zip,
-                                file_name=st.session_state.biz_mkt_name, mime="application/zip",
-                                use_container_width=True, type="primary", key="biz_dl_mkt")
-        if st.session_state.get("biz_prop_zip"):
-            st.download_button("⬇️ Download Properties / Seller Leads (ZIP)", data=st.session_state.biz_prop_zip,
-                                file_name=st.session_state.biz_prop_name, mime="application/zip",
-                                use_container_width=True, type="primary", key="biz_dl_prop")
 
     if not ready and files:
         if add_name:
@@ -448,23 +421,161 @@ def page_business_leads():
 
 # ── PAGE: REGARDING REPORTS ─────────────────────────────────────────────────
 def page_reports():
-    st.title("📊 Regarding Reports")
-    st.divider()
-    st.info("🚧 Coming Soon — this section will be built out in a future update.")
+    page_title("📊", "Regarding Reports", "Campaign performance reporting — coming soon")
+    st.markdown(
+        '''<div class="empty-state">
+                <div class="empty-state-icon">🚧</div>
+                <div class="empty-state-title">Coming Soon</div>
+                <div class="empty-state-sub">This section will be built out in a future update.</div>
+            </div>''',
+        unsafe_allow_html=True,
+    )
 
 # ── APP ──────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Campaign Organizer", page_icon="📋", layout="centered")
 
-st.sidebar.title("📋 Campaign Organizer")
-page = st.sidebar.radio(
-    "Navigation",
-    ["Campaign Organizer for People Leads", "Campaign Organizer for Business Leads", "Regarding Reports"],
-    key="nav_page"
-)
+CUSTOM_CSS = """
+<style>
+#MainMenu, footer, header {visibility: hidden;}
 
-if page == "Campaign Organizer for People Leads":
+html, body, [class*="css"] { font-family: 'Segoe UI', 'Inter', sans-serif; }
+
+.stApp { background: linear-gradient(180deg, #f7f9fc 0%, #eef1f8 100%); }
+
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #1b2340 0%, #262f52 100%);
+}
+section[data-testid="stSidebar"] * { color: #e7eaf6 !important; }
+section[data-testid="stSidebar"] .sidebar-brand {
+    display: flex; align-items: center; gap: 10px;
+    padding: 22px 4px 18px 4px; margin-bottom: 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.12);
+}
+section[data-testid="stSidebar"] .sidebar-brand-icon {
+    font-size: 28px;
+}
+section[data-testid="stSidebar"] .sidebar-brand-text {
+    font-size: 18px; font-weight: 700; line-height: 1.15;
+}
+section[data-testid="stSidebar"] .sidebar-brand-sub {
+    font-size: 11px; opacity: 0.65; font-weight: 400;
+}
+
+.page-hero {
+    display: flex; align-items: center; gap: 16px;
+    background: linear-gradient(135deg, #2f3a6b 0%, #4a5aa8 100%);
+    border-radius: 16px; padding: 22px 26px; margin-bottom: 26px;
+    box-shadow: 0 6px 20px rgba(47,58,107,0.25);
+}
+.page-hero-icon {
+    font-size: 34px; background: rgba(255,255,255,0.15);
+    border-radius: 12px; width: 56px; height: 56px;
+    display: flex; align-items: center; justify-content: center;
+}
+.page-hero-title { color: #ffffff; font-size: 24px; font-weight: 700; }
+.page-hero-sub { color: #dfe3f7; font-size: 13px; margin-top: 2px; }
+
+.step-header {
+    display: flex; align-items: center; gap: 10px;
+    margin: 26px 0 10px 0; padding-bottom: 8px;
+    border-bottom: 2px solid #e3e7f3;
+}
+.step-num {
+    background: #4a5aa8; color: #fff; font-weight: 700; font-size: 13px;
+    width: 24px; height: 24px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.step-icon { font-size: 18px; }
+.step-title { font-size: 16px; font-weight: 700; color: #1f2748; }
+.badge-optional {
+    margin-left: auto; font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+    text-transform: uppercase; color: #8a5a00; background: #ffe8b3;
+    padding: 3px 9px; border-radius: 20px;
+}
+
+.result-banner {
+    background: linear-gradient(135deg, #1f9d55 0%, #2fbf71 100%);
+    color: #fff; font-weight: 700; font-size: 16px;
+    padding: 14px 20px; border-radius: 12px; margin: 22px 0 14px 0;
+    box-shadow: 0 4px 14px rgba(31,157,85,0.25);
+}
+
+.empty-state {
+    text-align: center; padding: 60px 20px;
+    background: #ffffff; border-radius: 16px;
+    border: 1px dashed #c9cee0;
+}
+.empty-state-icon { font-size: 42px; margin-bottom: 10px; }
+.empty-state-title { font-size: 18px; font-weight: 700; color: #1f2748; }
+.empty-state-sub { font-size: 13px; color: #6b7290; margin-top: 4px; }
+
+.stButton>button {
+    border-radius: 10px !important; font-weight: 600 !important;
+    padding: 10px 18px !important; border: none !important;
+}
+.stButton>button[kind="primary"] {
+    background: linear-gradient(135deg, #4a5aa8 0%, #2f3a6b 100%) !important;
+    box-shadow: 0 4px 12px rgba(47,58,107,0.3) !important;
+}
+.stDownloadButton>button {
+    border-radius: 10px !important; font-weight: 600 !important;
+    background: linear-gradient(135deg, #1f9d55 0%, #2fbf71 100%) !important;
+    color: #fff !important; border: none !important;
+    box-shadow: 0 4px 12px rgba(31,157,85,0.25) !important;
+}
+
+div[data-testid="stFileUploaderDropzone"] {
+    border-radius: 14px !important; background: #ffffff !important;
+    border: 2px dashed #b7c0e0 !important;
+}
+
+.stCheckbox, .stTextInput, .stSelectbox, .stNumberInput { margin-bottom: 2px; }
+</style>
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+with st.sidebar:
+    st.markdown(
+        '''<div class="sidebar-brand">
+                <div class="sidebar-brand-icon">📋</div>
+                <div>
+                    <div class="sidebar-brand-text">Campaign<br/>Organizer</div>
+                </div>
+            </div>''',
+        unsafe_allow_html=True,
+    )
+    try:
+        from streamlit_option_menu import option_menu
+        page = option_menu(
+            menu_title=None,
+            options=["People Leads", "Business Leads", "Regarding Reports"],
+            icons=["person-lines-fill", "briefcase-fill", "bar-chart-line-fill"],
+            default_index=0,
+            styles={
+                "container": {"padding": "0!important", "background-color": "transparent"},
+                "icon": {"color": "#9aa4d6", "font-size": "16px"},
+                "nav-link": {
+                    "font-size": "14px", "font-weight": "600", "text-align": "left",
+                    "margin": "4px 0", "border-radius": "10px", "color": "#c8cde8",
+                    "padding": "11px 14px",
+                },
+                "nav-link-selected": {
+                    "background": "linear-gradient(135deg, #4a5aa8 0%, #2f3a6b 100%)",
+                    "color": "#ffffff",
+                },
+            },
+        )
+    except ImportError:
+        st.caption("Tip: `pip install streamlit-option-menu` for a nicer nav.")
+        page = st.radio(
+            "Navigation",
+            ["People Leads", "Business Leads", "Regarding Reports"],
+            key="nav_page", label_visibility="collapsed",
+        )
+
+if page == "People Leads":
     page_people_leads()
-elif page == "Campaign Organizer for Business Leads":
+elif page == "Business Leads":
     page_business_leads()
 else:
     page_reports()
