@@ -184,28 +184,22 @@ def build_zip(channel_parts):
     return buf.getvalue()
 
 def step_header(num, icon, title, optional=False):
-    badge = f'<span class="badge-optional">optional</span>' if optional else ""
-    st.markdown(
-        f'''<div class="step-header">
-                <span class="step-num">{num}</span>
-                <span class="step-icon">{icon}</span>
-                <span class="step-title">{title}</span>
-                {badge}
-            </div>''',
-        unsafe_allow_html=True,
-    )
+    col1, col2 = st.columns([5, 1])
+    with col1:
+        st.markdown(f"##### {icon}&nbsp;&nbsp;**Step {num} — {title}**")
+    with col2:
+        if optional:
+            st.badge("Optional", color="orange")
+    st.markdown("---")
 
 def page_title(icon, title, subtitle):
-    st.markdown(
-        f'''<div class="page-hero">
-                <div class="page-hero-icon">{icon}</div>
-                <div>
-                    <div class="page-hero-title">{title}</div>
-                    <div class="page-hero-sub">{subtitle}</div>
-                </div>
-            </div>''',
-        unsafe_allow_html=True,
-    )
+    with st.container(border=True):
+        col1, col2 = st.columns([1, 8])
+        with col1:
+            st.markdown(f"# {icon}")
+        with col2:
+            st.markdown(f"### {title}")
+            st.caption(subtitle)
 
 def campaign_details_block(key_prefix):
     """Renders the 'Campaign Name' toggle + fields. Returns (add_name, month, year, state, deal, output_name)."""
@@ -311,7 +305,7 @@ def page_people_leads():
         st.session_state.ppl_processed = True
 
     if st.session_state.get("ppl_processed"):
-        st.markdown('<div class="result-banner">✅ Processing Complete!</div>', unsafe_allow_html=True)
+        st.success("✅ **Processing Complete!**")
         st.info(f"📊 Total rows merged: **{st.session_state.ppl_total:,}**")
         st.info(f"📞 Original phone numbers: **{st.session_state.ppl_orig_phones:,}**")
         st.info(f"📧 Original emails: **{st.session_state.ppl_orig_emails:,}**")
@@ -397,7 +391,7 @@ def page_business_leads():
         st.session_state.biz_processed = True
 
     if st.session_state.get("biz_processed"):
-        st.markdown('<div class="result-banner">✅ Processing Complete!</div>', unsafe_allow_html=True)
+        st.success("✅ **Processing Complete!**")
         st.info(f"📊 Total rows merged: **{st.session_state.biz_total:,}**")
         st.success(f"📄 Business Leads Output rows: **{st.session_state.biz_base_count:,}**")
 
@@ -422,14 +416,10 @@ def page_business_leads():
 # ── PAGE: REGARDING REPORTS ─────────────────────────────────────────────────
 def page_reports():
     page_title("📊", "Regarding Reports", "Campaign performance reporting — coming soon")
-    st.markdown(
-        '''<div class="empty-state">
-                <div class="empty-state-icon">🚧</div>
-                <div class="empty-state-title">Coming Soon</div>
-                <div class="empty-state-sub">This section will be built out in a future update.</div>
-            </div>''',
-        unsafe_allow_html=True,
-    )
+    with st.container(border=True):
+        st.markdown("# 🚧")
+        st.markdown("#### Coming Soon")
+        st.caption("This section will be built out in a future update.")
 
 # ── APP ──────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Campaign Organizer", page_icon="📋", layout="centered")
@@ -442,22 +432,11 @@ html, body, [class*="css"] { font-family: 'Segoe UI', 'Inter', sans-serif; }
 
 .stApp { background: #F4F6FB; }
 
-/* ── Sidebar ── */
-section[data-testid="stSidebar"] {
-    background: #FFFFFF;
-    border-right: 1px solid #E7EAF3;
+.stButton>button {
+    border-radius: 10px !important;
 }
-.sidebar-brand {
-    display: flex; align-items: center; gap: 10px;
-    padding: 18px 4px 16px 4px; margin-bottom: 10px;
-    border-bottom: 1px solid #EEF0F7;
-}
-.sidebar-brand-icon {
-    font-size: 26px; background: #EEF0FE; border-radius: 10px;
-    width: 42px; height: 42px; display: flex; align-items: center; justify-content: center;
-}
-.sidebar-brand-text { font-size: 16px; font-weight: 700; color: #202542; line-height: 1.2; }
 
+/* ── Sidebar nav buttons ── */
 section[data-testid="stSidebar"] .stButton>button {
     width: 100%; text-align: left; justify-content: flex-start;
     background: transparent !important; color: #4B5170 !important;
@@ -472,56 +451,6 @@ section[data-testid="stSidebar"] .stButton>button[kind="primary"] {
     background: #3346D3 !important; color: #FFFFFF !important;
     box-shadow: 0 4px 10px rgba(51,70,211,0.28) !important;
 }
-
-/* ── Page hero ── */
-.page-hero {
-    display: flex; align-items: center; gap: 16px;
-    background: #FFFFFF; border: 1px solid #E7EAF3;
-    border-radius: 14px; padding: 20px 24px; margin-bottom: 24px;
-}
-.page-hero-icon {
-    font-size: 28px; background: #EEF0FE; border-radius: 12px;
-    width: 52px; height: 52px; display: flex; align-items: center; justify-content: center;
-    flex-shrink: 0;
-}
-.page-hero-title { color: #1D2140; font-size: 22px; font-weight: 700; }
-.page-hero-sub { color: #6B7290; font-size: 13px; margin-top: 2px; }
-
-/* ── Step headers ── */
-.step-header {
-    display: flex; align-items: center; gap: 10px;
-    margin: 24px 0 10px 0; padding-bottom: 8px;
-    border-bottom: 2px solid #E7EAF3;
-}
-.step-num {
-    background: #3346D3; color: #fff; font-weight: 700; font-size: 12px;
-    width: 22px; height: 22px; border-radius: 50%;
-    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-}
-.step-icon { font-size: 17px; }
-.step-title { font-size: 15px; font-weight: 700; color: #1D2140; }
-.badge-optional {
-    margin-left: auto; font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
-    text-transform: uppercase; color: #946200; background: #FFEEC2;
-    padding: 3px 9px; border-radius: 20px;
-}
-
-/* ── Result banner ── */
-.result-banner {
-    background: #E8F8EE; border: 1px solid #B7E9C9;
-    color: #157347; font-weight: 700; font-size: 15px;
-    padding: 12px 18px; border-radius: 10px; margin: 22px 0 14px 0;
-}
-
-/* ── Empty state ── */
-.empty-state {
-    text-align: center; padding: 54px 20px;
-    background: #ffffff; border-radius: 14px;
-    border: 1px dashed #C9CEE0;
-}
-.empty-state-icon { font-size: 38px; margin-bottom: 8px; }
-.empty-state-title { font-size: 17px; font-weight: 700; color: #1D2140; }
-.empty-state-sub { font-size: 13px; color: #6B7290; margin-top: 4px; }
 
 /* ── Buttons in main content ── */
 div[data-testid="stMain"] .stButton>button {
@@ -556,13 +485,8 @@ if "current_page" not in st.session_state:
     st.session_state.current_page = "People Leads"
 
 with st.sidebar:
-    st.markdown(
-        '''<div class="sidebar-brand">
-                <div class="sidebar-brand-icon">📋</div>
-                <div class="sidebar-brand-text">Campaign Organizer</div>
-            </div>''',
-        unsafe_allow_html=True,
-    )
+    st.markdown("## 📋 Campaign Organizer")
+    st.divider()
     for name, icon in NAV_PAGES:
         is_active = st.session_state.current_page == name
         if st.button(f"{icon}  {name}", key=f"nav_{name}",
