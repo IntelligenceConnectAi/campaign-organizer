@@ -346,10 +346,15 @@ def page_people_leads():
 # ── PAGE: BUSINESS LEADS ────────────────────────────────────────────────────
 def simple_merge_uploaded(files):
     """Business Leads have a different column schema than People Leads —
-    no DNC-column drop, no phone/email normalization. Just merge as-is."""
+    no DNC-column drop, no phone/email normalization. Just merge as-is.
+    Accepts both .xlsx and .csv files."""
     frames = []
     for uf in files:
-        df = pd.read_excel(uf, dtype=str)
+        name = uf.name.lower()
+        if name.endswith(".csv"):
+            df = pd.read_csv(uf, dtype=str)
+        else:
+            df = pd.read_excel(uf, dtype=str)
         frames.append(df)
     merged = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     return merged
@@ -358,8 +363,8 @@ def page_business_leads():
     page_title("🏢", "Business Leads", "Merge your business lead files and export in one click")
 
     step_header(1, "📁", "Upload Lead List")
-    files = st.file_uploader("Upload one or more Excel files (.xlsx)",
-                              type=["xlsx"], accept_multiple_files=True, key="biz_upload",
+    files = st.file_uploader("Upload one or more Excel or CSV files (.xlsx, .csv)",
+                              type=["xlsx", "csv"], accept_multiple_files=True, key="biz_upload",
                               label_visibility="collapsed")
     if files:
         st.success(f"✅ {len(files)} file(s) uploaded")
@@ -415,7 +420,7 @@ def page_business_leads():
 
 # ── PAGE: REGARDING REPORTS ─────────────────────────────────────────────────
 def page_reports():
-    page_title("📊", "Regarding Reports", "Campaign performance reporting — coming soon")
+    page_title("📊", "Guardrails Reports", "Campaign performance reporting — coming soon")
     with st.container(border=True):
         st.markdown("# 🚧")
         st.markdown("#### Coming Soon")
@@ -479,7 +484,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 NAV_PAGES = [
     ("People Leads", "👤"),
     ("Business Leads", "🏢"),
-    ("Regarding Reports", "📊"),
+    ("Guardrails Reports", "📊"),
 ]
 
 if "current_page" not in st.session_state:
