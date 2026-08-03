@@ -432,8 +432,9 @@ html, body, [class*="css"] { font-family: 'Segoe UI', 'Inter', sans-serif; }
 
 .stApp { background: #F4F6FB; }
 
-.stButton>button {
-    border-radius: 10px !important;
+/* ── Hide native sidebar collapse arrow ── */
+[data-testid="stSidebarCollapseButton"] {
+    display: none !important;
 }
 
 /* ── Sidebar nav buttons ── */
