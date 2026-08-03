@@ -440,139 +440,138 @@ CUSTOM_CSS = """
 
 html, body, [class*="css"] { font-family: 'Segoe UI', 'Inter', sans-serif; }
 
-.stApp { background: linear-gradient(180deg, #f7f9fc 0%, #eef1f8 100%); }
+.stApp { background: #F4F6FB; }
 
+/* ── Sidebar ── */
 section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #1b2340 0%, #262f52 100%);
+    background: #FFFFFF;
+    border-right: 1px solid #E7EAF3;
 }
-section[data-testid="stSidebar"] * { color: #e7eaf6 !important; }
-section[data-testid="stSidebar"] .sidebar-brand {
+.sidebar-brand {
     display: flex; align-items: center; gap: 10px;
-    padding: 22px 4px 18px 4px; margin-bottom: 6px;
-    border-bottom: 1px solid rgba(255,255,255,0.12);
+    padding: 18px 4px 16px 4px; margin-bottom: 10px;
+    border-bottom: 1px solid #EEF0F7;
 }
-section[data-testid="stSidebar"] .sidebar-brand-icon {
-    font-size: 28px;
+.sidebar-brand-icon {
+    font-size: 26px; background: #EEF0FE; border-radius: 10px;
+    width: 42px; height: 42px; display: flex; align-items: center; justify-content: center;
 }
-section[data-testid="stSidebar"] .sidebar-brand-text {
-    font-size: 18px; font-weight: 700; line-height: 1.15;
+.sidebar-brand-text { font-size: 16px; font-weight: 700; color: #202542; line-height: 1.2; }
+
+section[data-testid="stSidebar"] .stButton>button {
+    width: 100%; text-align: left; justify-content: flex-start;
+    background: transparent !important; color: #4B5170 !important;
+    border: 1px solid transparent !important; border-radius: 10px !important;
+    font-weight: 600 !important; padding: 10px 14px !important;
+    box-shadow: none !important; margin-bottom: 4px;
 }
-section[data-testid="stSidebar"] .sidebar-brand-sub {
-    font-size: 11px; opacity: 0.65; font-weight: 400;
+section[data-testid="stSidebar"] .stButton>button:hover {
+    background: #F1F3FC !important; color: #3346D3 !important;
+}
+section[data-testid="stSidebar"] .stButton>button[kind="primary"] {
+    background: #3346D3 !important; color: #FFFFFF !important;
+    box-shadow: 0 4px 10px rgba(51,70,211,0.28) !important;
 }
 
+/* ── Page hero ── */
 .page-hero {
     display: flex; align-items: center; gap: 16px;
-    background: linear-gradient(135deg, #2f3a6b 0%, #4a5aa8 100%);
-    border-radius: 16px; padding: 22px 26px; margin-bottom: 26px;
-    box-shadow: 0 6px 20px rgba(47,58,107,0.25);
+    background: #FFFFFF; border: 1px solid #E7EAF3;
+    border-radius: 14px; padding: 20px 24px; margin-bottom: 24px;
 }
 .page-hero-icon {
-    font-size: 34px; background: rgba(255,255,255,0.15);
-    border-radius: 12px; width: 56px; height: 56px;
-    display: flex; align-items: center; justify-content: center;
+    font-size: 28px; background: #EEF0FE; border-radius: 12px;
+    width: 52px; height: 52px; display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
 }
-.page-hero-title { color: #ffffff; font-size: 24px; font-weight: 700; }
-.page-hero-sub { color: #dfe3f7; font-size: 13px; margin-top: 2px; }
+.page-hero-title { color: #1D2140; font-size: 22px; font-weight: 700; }
+.page-hero-sub { color: #6B7290; font-size: 13px; margin-top: 2px; }
 
+/* ── Step headers ── */
 .step-header {
     display: flex; align-items: center; gap: 10px;
-    margin: 26px 0 10px 0; padding-bottom: 8px;
-    border-bottom: 2px solid #e3e7f3;
+    margin: 24px 0 10px 0; padding-bottom: 8px;
+    border-bottom: 2px solid #E7EAF3;
 }
 .step-num {
-    background: #4a5aa8; color: #fff; font-weight: 700; font-size: 13px;
-    width: 24px; height: 24px; border-radius: 50%;
+    background: #3346D3; color: #fff; font-weight: 700; font-size: 12px;
+    width: 22px; height: 22px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
-.step-icon { font-size: 18px; }
-.step-title { font-size: 16px; font-weight: 700; color: #1f2748; }
+.step-icon { font-size: 17px; }
+.step-title { font-size: 15px; font-weight: 700; color: #1D2140; }
 .badge-optional {
     margin-left: auto; font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
-    text-transform: uppercase; color: #8a5a00; background: #ffe8b3;
+    text-transform: uppercase; color: #946200; background: #FFEEC2;
     padding: 3px 9px; border-radius: 20px;
 }
 
+/* ── Result banner ── */
 .result-banner {
-    background: linear-gradient(135deg, #1f9d55 0%, #2fbf71 100%);
-    color: #fff; font-weight: 700; font-size: 16px;
-    padding: 14px 20px; border-radius: 12px; margin: 22px 0 14px 0;
-    box-shadow: 0 4px 14px rgba(31,157,85,0.25);
+    background: #E8F8EE; border: 1px solid #B7E9C9;
+    color: #157347; font-weight: 700; font-size: 15px;
+    padding: 12px 18px; border-radius: 10px; margin: 22px 0 14px 0;
 }
 
+/* ── Empty state ── */
 .empty-state {
-    text-align: center; padding: 60px 20px;
-    background: #ffffff; border-radius: 16px;
-    border: 1px dashed #c9cee0;
+    text-align: center; padding: 54px 20px;
+    background: #ffffff; border-radius: 14px;
+    border: 1px dashed #C9CEE0;
 }
-.empty-state-icon { font-size: 42px; margin-bottom: 10px; }
-.empty-state-title { font-size: 18px; font-weight: 700; color: #1f2748; }
-.empty-state-sub { font-size: 13px; color: #6b7290; margin-top: 4px; }
+.empty-state-icon { font-size: 38px; margin-bottom: 8px; }
+.empty-state-title { font-size: 17px; font-weight: 700; color: #1D2140; }
+.empty-state-sub { font-size: 13px; color: #6B7290; margin-top: 4px; }
 
-.stButton>button {
+/* ── Buttons in main content ── */
+div[data-testid="stMain"] .stButton>button {
     border-radius: 10px !important; font-weight: 600 !important;
-    padding: 10px 18px !important; border: none !important;
+    padding: 10px 18px !important; border: 1px solid #D8DCEC !important;
 }
-.stButton>button[kind="primary"] {
-    background: linear-gradient(135deg, #4a5aa8 0%, #2f3a6b 100%) !important;
-    box-shadow: 0 4px 12px rgba(47,58,107,0.3) !important;
+div[data-testid="stMain"] .stButton>button[kind="primary"] {
+    background: #3346D3 !important; color: #fff !important; border: none !important;
+    box-shadow: 0 4px 10px rgba(51,70,211,0.25) !important;
 }
 .stDownloadButton>button {
     border-radius: 10px !important; font-weight: 600 !important;
-    background: linear-gradient(135deg, #1f9d55 0%, #2fbf71 100%) !important;
-    color: #fff !important; border: none !important;
-    box-shadow: 0 4px 12px rgba(31,157,85,0.25) !important;
+    background: #1F9D55 !important; color: #fff !important; border: none !important;
+    box-shadow: 0 4px 10px rgba(31,157,85,0.2) !important;
 }
 
 div[data-testid="stFileUploaderDropzone"] {
-    border-radius: 14px !important; background: #ffffff !important;
-    border: 2px dashed #b7c0e0 !important;
+    border-radius: 12px !important; background: #FAFBFF !important;
+    border: 2px dashed #C3C9E6 !important;
 }
-
-.stCheckbox, .stTextInput, .stSelectbox, .stNumberInput { margin-bottom: 2px; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+NAV_PAGES = [
+    ("People Leads", "👤"),
+    ("Business Leads", "🏢"),
+    ("Regarding Reports", "📊"),
+]
+
+if "current_page" not in st.session_state:
+    st.session_state.current_page = "People Leads"
 
 with st.sidebar:
     st.markdown(
         '''<div class="sidebar-brand">
                 <div class="sidebar-brand-icon">📋</div>
-                <div>
-                    <div class="sidebar-brand-text">Campaign<br/>Organizer</div>
-                </div>
+                <div class="sidebar-brand-text">Campaign Organizer</div>
             </div>''',
         unsafe_allow_html=True,
     )
-    try:
-        from streamlit_option_menu import option_menu
-        page = option_menu(
-            menu_title=None,
-            options=["People Leads", "Business Leads", "Regarding Reports"],
-            icons=["person-lines-fill", "briefcase-fill", "bar-chart-line-fill"],
-            default_index=0,
-            styles={
-                "container": {"padding": "0!important", "background-color": "transparent"},
-                "icon": {"color": "#9aa4d6", "font-size": "16px"},
-                "nav-link": {
-                    "font-size": "14px", "font-weight": "600", "text-align": "left",
-                    "margin": "4px 0", "border-radius": "10px", "color": "#c8cde8",
-                    "padding": "11px 14px",
-                },
-                "nav-link-selected": {
-                    "background": "linear-gradient(135deg, #4a5aa8 0%, #2f3a6b 100%)",
-                    "color": "#ffffff",
-                },
-            },
-        )
-    except ImportError:
-        st.caption("Tip: `pip install streamlit-option-menu` for a nicer nav.")
-        page = st.radio(
-            "Navigation",
-            ["People Leads", "Business Leads", "Regarding Reports"],
-            key="nav_page", label_visibility="collapsed",
-        )
+    for name, icon in NAV_PAGES:
+        is_active = st.session_state.current_page == name
+        if st.button(f"{icon}  {name}", key=f"nav_{name}",
+                     type="primary" if is_active else "secondary",
+                     use_container_width=True):
+            st.session_state.current_page = name
+            st.rerun()
 
+page = st.session_state.current_page
 if page == "People Leads":
     page_people_leads()
 elif page == "Business Leads":
