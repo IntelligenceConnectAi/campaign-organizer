@@ -515,11 +515,16 @@ def page_business_leads():
 
 # ── PAGE: REPORTS ────────────────────────────────────────────────────────────
 def page_reports():
-    page_title("📊", "Regarding Reports", "Campaign performance reporting — coming soon")
-    with st.container(border=True):
-        st.markdown("# 🚧")
-        st.markdown("#### Coming Soon")
-        st.caption("This section will be built out in a future update.")
+    from reporting import render_reporting
+    auto_phones = st.session_state.get("ppl_orig_phones", 0)
+    auto_emails = st.session_state.get("ppl_orig_emails", 0)
+    mkt_counts  = st.session_state.get("ppl_mkt_counts", {})
+    auto_sms    = mkt_counts.get("sms", auto_phones)
+    if mkt_counts.get("dialer"):
+        auto_phones = mkt_counts["dialer"]
+    if mkt_counts.get("email"):
+        auto_emails = mkt_counts["email"]
+    render_reporting(auto_phones=auto_phones, auto_sms=auto_sms, auto_emails=auto_emails)
 
 # ── APP ──────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Campaign Organizer", page_icon="📋", layout="centered")
