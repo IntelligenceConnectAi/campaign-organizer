@@ -338,7 +338,7 @@ def page_people_leads():
 
     ready = bool(files and details_ok and (mkt_selected or prop_selected))
 
-    if st.button("⚙️ Process Files", use_container_width=True, type="primary",
+    if st.button("⚙️ Process Files", width='stretch', type="primary",
                  disabled=not ready, key="ppl_process"):
         try:
             tail = get_tail(add_name, month, year, state, deal, out_name)
@@ -398,13 +398,13 @@ def page_people_leads():
             st.download_button("⬇️ Download Marketing Process (ZIP)",
                                data=st.session_state.ppl_mkt_zip,
                                file_name=st.session_state.ppl_mkt_name,
-                               mime="application/zip", use_container_width=True,
+                               mime="application/zip", width='stretch',
                                type="primary", key="ppl_dl_mkt")
         if st.session_state.get("ppl_prop_zip"):
             st.download_button("⬇️ Download Properties / Seller Leads (ZIP)",
                                data=st.session_state.ppl_prop_zip,
                                file_name=st.session_state.ppl_prop_name,
-                               mime="application/zip", use_container_width=True,
+                               mime="application/zip", width='stretch',
                                type="primary", key="ppl_dl_prop")
 
     if not ready and files:
@@ -449,7 +449,7 @@ def page_business_leads():
 
     ready = bool(files and details_ok)
 
-    if st.button("⚙️ Process Files", use_container_width=True, type="primary",
+    if st.button("⚙️ Process Files", width='stretch', type="primary",
                  disabled=not ready, key="biz_process"):
         try:
             tail = get_tail(add_name, month, year, state, deal, out_name)
@@ -503,7 +503,7 @@ def page_business_leads():
             st.download_button("⬇️ Download Business Leads (ZIP)",
                                data=st.session_state.biz_base_zip,
                                file_name=st.session_state.biz_base_name,
-                               mime="application/zip", use_container_width=True,
+                               mime="application/zip", width='stretch',
                                type="primary", key="biz_dl")
 
     if not ready and files:
@@ -514,8 +514,7 @@ def page_business_leads():
         else:
             if not (out_name and out_name.strip()): st.warning("⚠️ Please enter Output File Name.")
 
-# ── PAGE: REPORTS ────────────────────────────────────────────────────────────
-# ── CONSTANTS FROM RULES TABS ─────────────────────────────────────────────────
+# ── REPORTING CONSTANTS ───────────────────────────────────────────────────────
 MAX_DIALS_PER_NUMBER    = 150
 DIALS_PER_CALLER        = 600
 MIN_CALLER_ID_POOL      = 10
@@ -536,6 +535,17 @@ EMAIL_WARMUP_DAYS       = 30
 EMAIL_ROTATION_DAYS     = 20
 EMAILS_BEFORE_ROTATION  = 700
 
+# ── ACCENT PALETTE (light theme, indigo-based) ────────────────────────────────
+CLR_INDIGO = "#3346D3"
+CLR_BLUE   = "#3B82F6"
+CLR_GREEN  = "#22A45D"
+CLR_PURPLE = "#8B5CF6"
+CLR_RED    = "#EF4444"
+CLR_AMBER  = "#F59E0B"
+CLR_INK    = "#1D2140"
+CLR_MUTE   = "#6B7290"
+CLR_GRID   = "#E7EAF3"
+
 def add_business_days(start_date, days):
     current = start_date
     added = 0
@@ -547,43 +557,34 @@ def add_business_days(start_date, days):
 
 def calculate_all(total_phones, total_sms, total_emails, callers, start_date=None):
     r = {}
-
-    # ── COLD CALLING ──────────────────────────────────────────────────────────
     r["dials_per_day"]        = math.ceil(total_phones / CALLING_DAYS_PER_MONTH)
     r["callers_needed"]       = math.ceil(r["dials_per_day"] / DIALS_PER_CALLER)
     r["active_caller_ids"]    = max(MIN_CALLER_ID_POOL, math.ceil(r["dials_per_day"] / MAX_DIALS_PER_NUMBER))
     r["rotation_cycles"]      = CALLING_DAYS_PER_MONTH // ROTATION_CALLING_DAYS
     r["total_caller_ids"]     = r["active_caller_ids"] * r["rotation_cycles"]
     r["dials_per_number"]     = math.ceil(r["dials_per_day"] / r["active_caller_ids"])
-    r["dials_check"]          = "✅ OK" if r["dials_per_number"] <= MAX_DIALS_PER_NUMBER else "⛔ OVER LIMIT"
     r["dials_check_ok"]       = r["dials_per_number"] <= MAX_DIALS_PER_NUMBER
 
-    # ── STAFFING ─────────────────────────────────────────────────────────────
     r["callers_diff"]         = callers - r["callers_needed"]
     r["staffing_ok"]          = callers >= r["callers_needed"]
     r["team_capacity"]        = callers * DIALS_PER_CALLER * CALLING_DAYS_PER_MONTH
     r["days_to_finish"]       = math.ceil(total_phones / (callers * DIALS_PER_CALLER)) if callers > 0 else 999
 
-    # ── SMS ──────────────────────────────────────────────────────────────────
     r["texts_per_day"]        = math.ceil(total_sms / CALLING_DAYS_PER_MONTH)
     r["min_sms_numbers"]      = math.ceil(r["texts_per_day"] / MAX_SMS_PER_NUMBER)
     r["campaigns_required"]   = math.ceil(r["texts_per_day"] / MAX_SMS_PER_CAMPAIGN)
     r["active_sms_numbers"]   = max(r["min_sms_numbers"], r["campaigns_required"] * SMS_NUMBERS_PER_CAMPAIGN)
     r["total_sms_numbers"]    = r["active_sms_numbers"] * r["rotation_cycles"]
     r["texts_per_number"]     = math.ceil(r["texts_per_day"] / r["active_sms_numbers"]) if r["active_sms_numbers"] > 0 else 0
-    r["sms_check"]            = "✅ OK" if r["texts_per_number"] <= MAX_SMS_PER_NUMBER else "⛔ OVER LIMIT"
     r["sms_check_ok"]         = r["texts_per_number"] <= MAX_SMS_PER_NUMBER
 
-    # ── EMAIL ─────────────────────────────────────────────────────────────────
     r["emails_per_day"]       = math.ceil(total_emails / CALLING_DAYS_PER_MONTH)
     r["inboxes_needed"]       = math.ceil(r["emails_per_day"] / MAX_EMAILS_PER_INBOX)
     r["domains_needed"]       = math.ceil(r["inboxes_needed"] / MAX_INBOXES_PER_DOMAIN)
     r["domain_capacity"]      = r["domains_needed"] * DOMAIN_DAILY_CAPACITY
     r["emails_per_inbox"]     = math.ceil(r["emails_per_day"] / r["inboxes_needed"]) if r["inboxes_needed"] > 0 else 0
-    r["email_check"]          = "✅ OK" if r["emails_per_inbox"] <= MAX_EMAILS_PER_INBOX else "⛔ OVER LIMIT"
     r["email_check_ok"]       = r["emails_per_inbox"] <= MAX_EMAILS_PER_INBOX
 
-    # ── DATES ─────────────────────────────────────────────────────────────────
     if start_date:
         r["campaign_end"]       = add_business_days(start_date, CALLING_DAYS_PER_MONTH)
         r["rotate_out_1"]       = add_business_days(start_date, ROTATION_CALLING_DAYS)
@@ -591,507 +592,266 @@ def calculate_all(total_phones, total_sms, total_emails, callers, start_date=Non
         r["warmup_start"]       = start_date - timedelta(days=EMAIL_WARMUP_DAYS)
         r["email_rotate"]       = add_business_days(start_date, EMAIL_ROTATION_DAYS)
     else:
-        r["campaign_end"]       = None
-        r["rotate_out_1"]       = None
-        r["rotate_out_2"]       = None
-        r["warmup_start"]       = None
-        r["email_rotate"]       = None
-
+        for k in ("campaign_end","rotate_out_1","rotate_out_2","warmup_start","email_rotate"):
+            r[k] = None
     return r
 
+# ── PLOTLY CHART BUILDERS ─────────────────────────────────────────────────────
+def _base_layout(fig, height=260):
+    fig.update_layout(
+        height=height,
+        margin=dict(l=10, r=10, t=30, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter, Segoe UI, sans-serif", color=CLR_INK, size=13),
+        showlegend=False,
+    )
+    return fig
 
+def gauge_chart(value, limit, title, unit=""):
+    import plotly.graph_objects as go
+    ok = value <= limit
+    bar_color = CLR_GREEN if ok else CLR_RED
+    axis_max = max(limit * 1.4, value * 1.15, 1)
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=value,
+        number={"suffix": unit, "font": {"size": 30, "color": CLR_INK}},
+        title={"text": title, "font": {"size": 14, "color": CLR_MUTE}},
+        gauge={
+            "axis": {"range": [0, axis_max], "tickcolor": CLR_MUTE, "tickfont": {"size": 10}},
+            "bar": {"color": bar_color, "thickness": 0.7},
+            "bgcolor": "#F4F6FB",
+            "borderwidth": 0,
+            "steps": [
+                {"range": [0, limit], "color": "#E8F5EC"},
+                {"range": [limit, axis_max], "color": "#FCE9E9"},
+            ],
+            "threshold": {"line": {"color": CLR_INK, "width": 3}, "thickness": 0.8, "value": limit},
+        },
+    ))
+    return _base_layout(fig, height=240)
+
+def bar_breakdown(labels, values, colors, title):
+    import plotly.graph_objects as go
+    fig = go.Figure(go.Bar(
+        x=labels, y=values,
+        marker=dict(color=colors, line=dict(width=0)),
+        text=[f"{v:,}" for v in values],
+        textposition="outside",
+        textfont=dict(size=12, color=CLR_INK),
+    ))
+    fig.update_yaxes(showgrid=True, gridcolor=CLR_GRID, zeroline=False)
+    fig.update_xaxes(showgrid=False)
+    fig.update_layout(title=dict(text=title, font=dict(size=14, color=CLR_MUTE)))
+    return _base_layout(fig, height=300)
+
+def timeline_chart(events):
+    """events: list of dicts {task, start, end, color}"""
+    import plotly.graph_objects as go
+    fig = go.Figure()
+    for i, ev in enumerate(events):
+        fig.add_trace(go.Bar(
+            base=[ev["start"]],
+            x=[(ev["end"] - ev["start"]).days],
+            y=[ev["task"]],
+            orientation="h",
+            marker=dict(color=ev["color"]),
+            hovertemplate=f"{ev['task']}<br>{ev['start'].strftime('%b %d')} → {ev['end'].strftime('%b %d')}<extra></extra>",
+            width=0.55,
+        ))
+    fig.update_xaxes(type="date", showgrid=True, gridcolor=CLR_GRID)
+    fig.update_yaxes(showgrid=False, autorange="reversed")
+    fig.update_layout(barmode="stack")
+    return _base_layout(fig, height=260)
+
+# ── LIGHT KPI CARD (native, no dark HTML) ─────────────────────────────────────
+def kpi_card(col, label, value, desc, status=None):
+    """status: None | 'ok' | 'bad' -> tints the value color."""
+    color = CLR_INK
+    if status == "ok":
+        color = CLR_GREEN
+    elif status == "bad":
+        color = CLR_RED
+    with col:
+        st.markdown(
+            f"""<div style="background:#FFFFFF;border:1px solid {CLR_GRID};border-radius:14px;
+                        padding:16px 18px;margin-bottom:12px;box-shadow:0 1px 3px rgba(20,25,45,0.04);">
+                    <div style="font-size:0.72rem;font-weight:600;color:{CLR_MUTE};
+                                text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">{label}</div>
+                    <div style="font-size:1.9rem;font-weight:800;color:{color};line-height:1;">{value}</div>
+                    <div style="font-size:0.72rem;color:#9AA0B4;margin-top:5px;">{desc}</div>
+                </div>""",
+            unsafe_allow_html=True,
+        )
+
+def channel_banner(icon, title, subtitle, accent):
+    st.markdown(
+        f"""<div style="display:flex;align-items:center;gap:12px;background:#FFFFFF;
+                    border:1px solid {CLR_GRID};border-left:5px solid {accent};
+                    border-radius:12px;padding:14px 18px;margin:8px 0 16px 0;">
+                <span style="font-size:1.7rem;">{icon}</span>
+                <div>
+                    <div style="font-size:1.05rem;font-weight:800;color:{CLR_INK};">{title}</div>
+                    <div style="font-size:0.75rem;color:{CLR_MUTE};">{subtitle}</div>
+                </div>
+            </div>""",
+        unsafe_allow_html=True,
+    )
+
+# ── REPORTING PAGE ────────────────────────────────────────────────────────────
 def render_reporting(auto_phones=0, auto_sms=0, auto_emails=0):
+    page_title("📊", "Marketing Guardrails", "Monthly campaign capacity & compliance dashboard")
 
-    # ── CSS ───────────────────────────────────────────────────────────────────
-    st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
-
-    .report-wrap { font-family: 'Inter', sans-serif; }
-
-    .hero-title {
-        text-align: center;
-        font-size: 2.2rem;
-        font-weight: 900;
-        letter-spacing: -0.5px;
-        background: linear-gradient(135deg, #F5A623 0%, #F7C948 50%, #F5A623 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        margin-bottom: 4px;
-    }
-    .hero-sub {
-        text-align: center;
-        color: #8892A4;
-        font-size: 0.9rem;
-        font-weight: 400;
-        letter-spacing: 2px;
-        text-transform: uppercase;
-        margin-bottom: 32px;
-    }
-    .section-title {
-        font-size: 0.72rem;
-        font-weight: 700;
-        letter-spacing: 3px;
-        text-transform: uppercase;
-        color: #F5A623;
-        margin-bottom: 16px;
-        margin-top: 8px;
-    }
-
-    /* ── METRIC CARD ─────────────────────────────────── */
-    .metric-card {
-        background: linear-gradient(145deg, #1A2035 0%, #141929 100%);
-        border: 1px solid rgba(245,166,35,0.15);
-        border-radius: 16px;
-        padding: 20px 22px;
-        margin-bottom: 14px;
-        box-shadow: 0 4px 24px rgba(0,0,0,0.3);
-        transition: all 0.2s;
-    }
-    .metric-card:hover {
-        border-color: rgba(245,166,35,0.35);
-        box-shadow: 0 8px 32px rgba(245,166,35,0.08);
-        transform: translateY(-1px);
-    }
-    .metric-label {
-        font-size: 0.72rem;
-        font-weight: 600;
-        color: #8892A4;
-        text-transform: uppercase;
-        letter-spacing: 1.5px;
-        margin-bottom: 6px;
-    }
-    .metric-value {
-        font-size: 2.1rem;
-        font-weight: 800;
-        color: #F5A623;
-        line-height: 1;
-        margin-bottom: 4px;
-    }
-    .metric-desc {
-        font-size: 0.72rem;
-        color: #5A6378;
-        font-weight: 400;
-    }
-    .metric-value-white {
-        font-size: 2.1rem;
-        font-weight: 800;
-        color: #E8EAF0;
-        line-height: 1;
-        margin-bottom: 4px;
-    }
-
-    /* ── CHANNEL HEADER ─────────────────────────────── */
-    .channel-header {
-        border-radius: 14px;
-        padding: 18px 22px;
-        margin-bottom: 20px;
-        display: flex;
-        align-items: center;
-        gap: 12px;
-    }
-    .ch-cc   { background: linear-gradient(135deg, #1E3A5F 0%, #152D4A 100%); border: 1px solid rgba(59,130,246,0.3); }
-    .ch-sms  { background: linear-gradient(135deg, #1E4535 0%, #153324 100%); border: 1px solid rgba(34,197,94,0.3); }
-    .ch-mail { background: linear-gradient(135deg, #3D1E5F 0%, #2D1548 100%); border: 1px solid rgba(168,85,247,0.3); }
-    .ch-icon { font-size: 2rem; }
-    .ch-title { font-size: 1.1rem; font-weight: 800; color: #E8EAF0; }
-    .ch-sub   { font-size: 0.75rem; color: #8892A4; font-weight: 400; }
-
-    /* ── STATUS BADGES ──────────────────────────────── */
-    .badge-ok     { background: rgba(34,197,94,0.15); color: #22C55E; border: 1px solid rgba(34,197,94,0.3); border-radius: 8px; padding: 4px 12px; font-size: 0.75rem; font-weight: 700; display: inline-block; }
-    .badge-warn   { background: rgba(245,166,35,0.15); color: #F5A623; border: 1px solid rgba(245,166,35,0.3); border-radius: 8px; padding: 4px 12px; font-size: 0.75rem; font-weight: 700; display: inline-block; }
-    .badge-danger { background: rgba(239,68,68,0.15); color: #EF4444; border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 4px 12px; font-size: 0.75rem; font-weight: 700; display: inline-block; }
-
-    /* ── STAFFING ALERT ─────────────────────────────── */
-    .alert-danger {
-        background: linear-gradient(135deg, rgba(239,68,68,0.12) 0%, rgba(185,28,28,0.08) 100%);
-        border: 1px solid rgba(239,68,68,0.4);
-        border-left: 4px solid #EF4444;
-        border-radius: 14px;
-        padding: 20px 24px;
-        margin: 8px 0 20px 0;
-    }
-    .alert-success {
-        background: linear-gradient(135deg, rgba(34,197,94,0.1) 0%, rgba(21,128,61,0.06) 100%);
-        border: 1px solid rgba(34,197,94,0.35);
-        border-left: 4px solid #22C55E;
-        border-radius: 14px;
-        padding: 20px 24px;
-        margin: 8px 0 20px 0;
-    }
-    .alert-title  { font-size: 1.1rem; font-weight: 800; margin-bottom: 6px; }
-    .alert-body   { font-size: 0.85rem; color: #8892A4; }
-
-    /* ── ROTATION TABLE ─────────────────────────────── */
-    .rot-card {
-        background: linear-gradient(145deg, #1A2035 0%, #141929 100%);
-        border: 1px solid rgba(245,166,35,0.12);
-        border-radius: 16px;
-        padding: 20px 24px;
-        margin-bottom: 12px;
-    }
-    .rot-asset { font-size: 0.85rem; font-weight: 700; color: #E8EAF0; margin-bottom: 6px; }
-    .rot-row   { display: flex; gap: 20px; flex-wrap: wrap; }
-    .rot-item  { }
-    .rot-key   { font-size: 0.65rem; color: #5A6378; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
-    .rot-val   { font-size: 0.9rem; color: #F5A623; font-weight: 700; }
-
-    /* ── DIVIDER ────────────────────────────────────── */
-    .gold-divider {
-        height: 1px;
-        background: linear-gradient(90deg, transparent, rgba(245,166,35,0.4), transparent);
-        margin: 28px 0;
-    }
-
-    /* ── INPUT PANEL ────────────────────────────────── */
-    .input-panel {
-        background: linear-gradient(145deg, #1A2035 0%, #141929 100%);
-        border: 1px solid rgba(245,166,35,0.2);
-        border-radius: 18px;
-        padding: 24px;
-        margin-bottom: 28px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    st.markdown('<div class="report-wrap">', unsafe_allow_html=True)
-
-    # ── HERO ──────────────────────────────────────────────────────────────────
-    st.markdown('<div class="hero-title">⚡ FHO MARKETING GUARDRAILS</div>', unsafe_allow_html=True)
-    st.markdown('<div class="hero-sub">Monthly Campaign Intelligence Dashboard</div>', unsafe_allow_html=True)
-
-    # ── INPUT PANEL ───────────────────────────────────────────────────────────
-    st.markdown('<div class="section-title">▸ Campaign Inputs</div>', unsafe_allow_html=True)
-    with st.container():
+    st.markdown("##### 🎯&nbsp;&nbsp;**Campaign Inputs**")
+    with st.container(border=True):
         c1, c2, c3 = st.columns(3)
         with c1:
-            total_phones = st.number_input("📞 Total Phone Numbers",
-                min_value=0, value=int(auto_phones) if auto_phones else 0,
-                step=1000, format="%d", key="rpt_phones")
+            total_phones = st.number_input("📞 Total Phone Numbers", min_value=0,
+                value=int(auto_phones) if auto_phones else 0, step=1000, format="%d", key="rpt_phones")
         with c2:
-            total_sms = st.number_input("💬 Total SMS Numbers (Mobile)",
-                min_value=0, value=int(auto_sms) if auto_sms else 0,
-                step=1000, format="%d", key="rpt_sms")
+            total_sms = st.number_input("💬 Total SMS Numbers (Mobile)", min_value=0,
+                value=int(auto_sms) if auto_sms else 0, step=1000, format="%d", key="rpt_sms")
         with c3:
-            total_emails = st.number_input("📧 Total Email Addresses",
-                min_value=0, value=int(auto_emails) if auto_emails else 0,
-                step=1000, format="%d", key="rpt_emails")
-
+            total_emails = st.number_input("📧 Total Email Addresses", min_value=0,
+                value=int(auto_emails) if auto_emails else 0, step=1000, format="%d", key="rpt_emails")
         c4, c5 = st.columns(2)
         with c4:
-            callers = st.number_input("👥 Callers on Team",
-                min_value=0, value=2, step=1, format="%d", key="rpt_callers")
+            callers = st.number_input("👥 Callers on Team", min_value=0, value=2, step=1, format="%d", key="rpt_callers")
         with c5:
             use_dates = st.checkbox("📅 Add Campaign Dates (Optional)", key="rpt_use_dates")
-
         start_date = None
         if use_dates:
             start_date = st.date_input("Campaign Start Date", value=date.today(), key="rpt_start")
 
     if total_phones == 0 and total_sms == 0 and total_emails == 0:
-        st.markdown("""
-        <div style="text-align:center; padding: 60px 20px; color: #5A6378;">
-            <div style="font-size: 3rem; margin-bottom: 12px;">📊</div>
-            <div style="font-size: 1rem; font-weight: 600; color: #8892A4;">Enter your numbers above to generate the report</div>
-            <div style="font-size: 0.8rem; margin-top: 6px;">Process your files first — counts will auto-populate</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.info("👆 Enter your numbers above to generate the report. Process your files first and the counts auto-populate here.")
         return
 
     r = calculate_all(total_phones, total_sms, total_emails, callers, start_date)
 
-    st.markdown('<div class="gold-divider"></div>', unsafe_allow_html=True)
-
-    # ── COLD CALLING ─────────────────────────────────────────────────────────
-    st.markdown("""
-    <div class="channel-header ch-cc">
-        <span class="ch-icon">📞</span>
-        <div>
-            <div class="ch-title">Cold Calling</div>
-            <div class="ch-sub">Landline + Mobile · All phone numbers</div>
-        </div>
-    </div>""", unsafe_allow_html=True)
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Dials per Day</div>
-            <div class="metric-value">{r['dials_per_day']:,}</div>
-            <div class="metric-desc">Total ÷ 20 days</div>
-        </div>""", unsafe_allow_html=True)
-    with c2:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Callers Needed</div>
-            <div class="metric-value">{r['callers_needed']:,}</div>
-            <div class="metric-desc">Dials ÷ 600/caller</div>
-        </div>""", unsafe_allow_html=True)
-    with c3:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Active Caller IDs</div>
-            <div class="metric-value">{r['active_caller_ids']:,}</div>
-            <div class="metric-desc">Per rotation cycle</div>
-        </div>""", unsafe_allow_html=True)
-    with c4:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Total Caller IDs</div>
-            <div class="metric-value">{r['total_caller_ids']:,}</div>
-            <div class="metric-desc">Active × {r['rotation_cycles']} cycles</div>
-        </div>""", unsafe_allow_html=True)
-
-    c5, c6, c7, c8 = st.columns(4)
-    with c5:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Dials / Number / Day</div>
-            <div class="metric-value {'metric-value' if r['dials_check_ok'] else 'metric-value'}" style="color: {'#22C55E' if r['dials_check_ok'] else '#EF4444'}">{r['dials_per_number']:,}</div>
-            <div class="metric-desc">Limit: 150/day</div>
-        </div>""", unsafe_allow_html=True)
-    with c6:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Rotation Cycles</div>
-            <div class="metric-value-white">{r['rotation_cycles']}</div>
-            <div class="metric-desc">Every 10 calling days</div>
-        </div>""", unsafe_allow_html=True)
-    with c7:
-        color = "#22C55E" if r['dials_check_ok'] else "#EF4444"
-        badge = "badge-ok" if r['dials_check_ok'] else "badge-danger"
-        label = "WITHIN LIMIT" if r['dials_check_ok'] else "OVER LIMIT"
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Dials Check</div>
-            <div style="margin: 10px 0;"><span class="{badge}">{label}</span></div>
-            <div class="metric-desc">Must stay ≤ 150/number/day</div>
-        </div>""", unsafe_allow_html=True)
-    with c8:
-        if r.get("campaign_end"):
-            st.markdown(f"""<div class="metric-card">
-                <div class="metric-label">Campaign End</div>
-                <div class="metric-value-white" style="font-size:1.3rem">{r['campaign_end'].strftime('%b %d, %Y')}</div>
-                <div class="metric-desc">20 business days from start</div>
-            </div>""", unsafe_allow_html=True)
-        else:
-            st.markdown(f"""<div class="metric-card">
-                <div class="metric-label">Campaign Duration</div>
-                <div class="metric-value-white">20</div>
-                <div class="metric-desc">Business days</div>
-            </div>""", unsafe_allow_html=True)
-
-    st.markdown('<div class="gold-divider"></div>', unsafe_allow_html=True)
-
-    # ── STAFFING ─────────────────────────────────────────────────────────────
-    st.markdown('<div class="section-title">▸ Staffing Analysis</div>', unsafe_allow_html=True)
-
-    if r["staffing_ok"]:
-        surplus = r["callers_diff"]
-        st.markdown(f"""<div class="alert-success">
-            <div class="alert-title" style="color:#22C55E">✅ Staffing: Sufficient</div>
-            <div class="alert-body">You have <strong style="color:#E8EAF0">{callers} callers</strong> — 
-            {surplus} surplus over the {r['callers_needed']} needed. 
-            Your team can finish the list in <strong style="color:#E8EAF0">{r['days_to_finish']} days</strong>.</div>
-        </div>""", unsafe_allow_html=True)
+    # ── OVERALL COMPLIANCE STATUS ─────────────────────────────────────────────
+    checks = [("Cold Calling", r["dials_check_ok"]), ("SMS", r["sms_check_ok"]),
+              ("Email", r["email_check_ok"]), ("Staffing", r["staffing_ok"])]
+    passed = sum(1 for _, ok in checks if ok)
+    st.markdown("")
+    if passed == len(checks):
+        st.success(f"✅ **All {len(checks)} guardrails within limits** — campaign is safe to launch.")
     else:
-        shortfall = abs(r["callers_diff"])
-        st.markdown(f"""<div class="alert-danger">
-            <div class="alert-title" style="color:#EF4444">⚠️ Staffing: Shortfall</div>
-            <div class="alert-body">You have <strong style="color:#E8EAF0">{callers} callers</strong> but need 
-            <strong style="color:#E8EAF0">{r['callers_needed']}</strong>. 
-            Hire <strong style="color:#EF4444">{shortfall} more caller(s)</strong> to finish in 20 days. 
-            At current staffing, the list takes <strong style="color:#EF4444">{r['days_to_finish']} days</strong>.</div>
-        </div>""", unsafe_allow_html=True)
+        failed = [name for name, ok in checks if not ok]
+        st.warning(f"⚠️ **{passed}/{len(checks)} guardrails OK** — needs attention: {', '.join(failed)}")
 
-    sa, sb, sc = st.columns(3)
-    with sa:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Callers Needed</div>
-            <div class="metric-value">{r['callers_needed']:,}</div>
-            <div class="metric-desc">To finish in 20 days</div>
-        </div>""", unsafe_allow_html=True)
-    with sb:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Team Capacity (20 days)</div>
-            <div class="metric-value-white">{r['team_capacity']:,}</div>
-            <div class="metric-desc">{callers} callers × 600 × 20</div>
-        </div>""", unsafe_allow_html=True)
-    with sc:
-        days_color = "#22C55E" if r['days_to_finish'] <= 20 else "#EF4444"
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Days to Finish</div>
-            <div class="metric-value" style="color:{days_color}">{r['days_to_finish']}</div>
-            <div class="metric-desc">Target: 20 or fewer</div>
-        </div>""", unsafe_allow_html=True)
+    st.divider()
 
-    st.markdown('<div class="gold-divider"></div>', unsafe_allow_html=True)
+    # ══ COLD CALLING ══════════════════════════════════════════════════════════
+    channel_banner("📞", "Cold Calling", "Landline + Mobile · all phone numbers", CLR_BLUE)
+    k = st.columns(4)
+    kpi_card(k[0], "Dials / Day", f"{r['dials_per_day']:,}", "Total ÷ 20 days")
+    kpi_card(k[1], "Callers Needed", f"{r['callers_needed']:,}", "Dials ÷ 600/caller")
+    kpi_card(k[2], "Active Caller IDs", f"{r['active_caller_ids']:,}", "Per rotation cycle")
+    kpi_card(k[3], "Total Caller IDs", f"{r['total_caller_ids']:,}", f"Active × {r['rotation_cycles']} cycles")
 
-    # ── SMS ──────────────────────────────────────────────────────────────────
-    st.markdown("""
-    <div class="channel-header ch-sms">
-        <span class="ch-icon">💬</span>
-        <div>
-            <div class="ch-title">SMS</div>
-            <div class="ch-sub">Mobile numbers only · A2P 10DLC</div>
-        </div>
-    </div>""", unsafe_allow_html=True)
+    g1, g2 = st.columns([1, 1])
+    with g1:
+        st.plotly_chart(gauge_chart(r["dials_per_number"], MAX_DIALS_PER_NUMBER,
+                        "Dials / Number / Day", ""), width='stretch',
+                        config={"displayModeBar": False}, key="g_cc")
+        st.caption(f"Limit: {MAX_DIALS_PER_NUMBER}/number/day · "
+                   + ("✅ within limit" if r['dials_check_ok'] else "⛔ over limit"))
+    with g2:
+        st.plotly_chart(bar_breakdown(
+            ["Dials/Day", "Team Cap/Day", "Per Caller"],
+            [r["dials_per_day"], callers * DIALS_PER_CALLER, DIALS_PER_CALLER],
+            [CLR_BLUE, CLR_INDIGO, "#9AA0E8"],
+            "Daily Calling Capacity"), width='stretch',
+            config={"displayModeBar": False}, key="b_cc")
 
-    s1, s2, s3, s4 = st.columns(4)
-    with s1:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Texts per Day</div>
-            <div class="metric-value">{r['texts_per_day']:,}</div>
-            <div class="metric-desc">SMS total ÷ 20 days</div>
-        </div>""", unsafe_allow_html=True)
-    with s2:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Campaigns Required</div>
-            <div class="metric-value">{r['campaigns_required']:,}</div>
-            <div class="metric-desc">÷ 2,000/campaign/day</div>
-        </div>""", unsafe_allow_html=True)
-    with s3:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Active SMS Numbers</div>
-            <div class="metric-value">{r['active_sms_numbers']:,}</div>
-            <div class="metric-desc">Per cycle · {SMS_NUMBERS_PER_CAMPAIGN}/campaign</div>
-        </div>""", unsafe_allow_html=True)
-    with s4:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Total SMS Numbers</div>
-            <div class="metric-value">{r['total_sms_numbers']:,}</div>
-            <div class="metric-desc">Active × {r['rotation_cycles']} cycles</div>
-        </div>""", unsafe_allow_html=True)
+    st.divider()
 
-    s5, s6, s7, _ = st.columns(4)
-    with s5:
-        sms_color = "#22C55E" if r['sms_check_ok'] else "#EF4444"
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Texts / Number / Day</div>
-            <div class="metric-value" style="color:{sms_color}">{r['texts_per_number']:,}</div>
-            <div class="metric-desc">Limit: 500/day</div>
-        </div>""", unsafe_allow_html=True)
-    with s6:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Min Sending Numbers</div>
-            <div class="metric-value-white">{r['min_sms_numbers']:,}</div>
-            <div class="metric-desc">Texts ÷ 500/number</div>
-        </div>""", unsafe_allow_html=True)
-    with s7:
-        badge = "badge-ok" if r['sms_check_ok'] else "badge-danger"
-        label = "WITHIN LIMIT" if r['sms_check_ok'] else "OVER LIMIT"
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">SMS Check</div>
-            <div style="margin: 10px 0;"><span class="{badge}">{label}</span></div>
-            <div class="metric-desc">Must stay ≤ 500/number/day</div>
-        </div>""", unsafe_allow_html=True)
+    # ══ STAFFING ══════════════════════════════════════════════════════════════
+    st.markdown("##### 👥&nbsp;&nbsp;**Staffing Analysis**")
+    if r["staffing_ok"]:
+        st.success(f"✅ **Sufficient** — {callers} callers, {r['callers_diff']} surplus over the "
+                   f"{r['callers_needed']} needed. List finishes in ~{r['days_to_finish']} days.")
+    else:
+        st.error(f"⚠️ **Shortfall** — {callers} callers but need {r['callers_needed']}. "
+                 f"Hire {abs(r['callers_diff'])} more to finish in 20 days "
+                 f"(currently ~{r['days_to_finish']} days).")
+    sc = st.columns(3)
+    kpi_card(sc[0], "Callers Needed", f"{r['callers_needed']:,}", "To finish in 20 days")
+    kpi_card(sc[1], "Team Capacity (20d)", f"{r['team_capacity']:,}", f"{callers} × 600 × 20")
+    kpi_card(sc[2], "Days to Finish", f"{r['days_to_finish']}", "Target: ≤ 20",
+             status="ok" if r["days_to_finish"] <= 20 else "bad")
 
-    st.markdown('<div class="gold-divider"></div>', unsafe_allow_html=True)
+    st.divider()
 
-    # ── EMAIL ─────────────────────────────────────────────────────────────────
-    st.markdown("""
-    <div class="channel-header ch-mail">
-        <span class="ch-icon">📧</span>
-        <div>
-            <div class="ch-title">Email</div>
-            <div class="ch-sub">Verified emails only · CAN-SPAM compliant</div>
-        </div>
-    </div>""", unsafe_allow_html=True)
+    # ══ SMS ═══════════════════════════════════════════════════════════════════
+    channel_banner("💬", "SMS", "Mobile numbers only · A2P 10DLC", CLR_GREEN)
+    sk = st.columns(4)
+    kpi_card(sk[0], "Texts / Day", f"{r['texts_per_day']:,}", "SMS ÷ 20 days")
+    kpi_card(sk[1], "Campaigns Required", f"{r['campaigns_required']:,}", "÷ 2,000/campaign/day")
+    kpi_card(sk[2], "Active SMS Numbers", f"{r['active_sms_numbers']:,}", f"{SMS_NUMBERS_PER_CAMPAIGN}/campaign")
+    kpi_card(sk[3], "Total SMS Numbers", f"{r['total_sms_numbers']:,}", f"Active × {r['rotation_cycles']} cycles")
 
-    e1, e2, e3, e4 = st.columns(4)
-    with e1:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Emails per Day</div>
-            <div class="metric-value">{r['emails_per_day']:,}</div>
-            <div class="metric-desc">Total ÷ 20 days</div>
-        </div>""", unsafe_allow_html=True)
-    with e2:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Inboxes Needed</div>
-            <div class="metric-value">{r['inboxes_needed']:,}</div>
-            <div class="metric-desc">÷ 35/inbox/day</div>
-        </div>""", unsafe_allow_html=True)
-    with e3:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Domains Needed</div>
-            <div class="metric-value">{r['domains_needed']:,}</div>
-            <div class="metric-desc">÷ 5 inboxes/domain</div>
-        </div>""", unsafe_allow_html=True)
-    with e4:
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Domain Daily Capacity</div>
-            <div class="metric-value-white">{r['domain_capacity']:,}</div>
-            <div class="metric-desc">Domains × 175/day</div>
-        </div>""", unsafe_allow_html=True)
+    sg1, sg2 = st.columns([1, 1])
+    with sg1:
+        st.plotly_chart(gauge_chart(r["texts_per_number"], MAX_SMS_PER_NUMBER,
+                        "Texts / Number / Day", ""), width='stretch',
+                        config={"displayModeBar": False}, key="g_sms")
+        st.caption(f"Limit: {MAX_SMS_PER_NUMBER}/number/day · "
+                   + ("✅ within limit" if r['sms_check_ok'] else "⛔ over limit"))
+    with sg2:
+        st.plotly_chart(bar_breakdown(
+            ["Texts/Day", "Min Numbers", "Active Numbers"],
+            [r["texts_per_day"], r["min_sms_numbers"], r["active_sms_numbers"]],
+            [CLR_GREEN, "#7DD3A8", CLR_INDIGO],
+            "SMS Volume & Numbers"), width='stretch',
+            config={"displayModeBar": False}, key="b_sms")
 
-    e5, e6, e7, e8 = st.columns(4)
-    with e5:
-        email_color = "#22C55E" if r['email_check_ok'] else "#EF4444"
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Emails / Inbox / Day</div>
-            <div class="metric-value" style="color:{email_color}">{r['emails_per_inbox']:,}</div>
-            <div class="metric-desc">Limit: 35/day</div>
-        </div>""", unsafe_allow_html=True)
-    with e6:
-        badge = "badge-ok" if r['email_check_ok'] else "badge-danger"
-        label = "WITHIN LIMIT" if r['email_check_ok'] else "OVER LIMIT"
-        st.markdown(f"""<div class="metric-card">
-            <div class="metric-label">Email Check</div>
-            <div style="margin: 10px 0;"><span class="{badge}">{label}</span></div>
-            <div class="metric-desc">Must stay ≤ 35/inbox/day</div>
-        </div>""", unsafe_allow_html=True)
-    with e7:
-        if r.get("warmup_start"):
-            st.markdown(f"""<div class="metric-card">
-                <div class="metric-label">Warmup Start Date</div>
-                <div class="metric-value-white" style="font-size:1.2rem">{r['warmup_start'].strftime('%b %d, %Y')}</div>
-                <div class="metric-desc">Start − 30 warmup days</div>
-            </div>""", unsafe_allow_html=True)
-        else:
-            st.markdown(f"""<div class="metric-card">
-                <div class="metric-label">Warmup Required</div>
-                <div class="metric-value-white">30</div>
-                <div class="metric-desc">Days before campaign</div>
-            </div>""", unsafe_allow_html=True)
-    with e8:
-        if r.get("email_rotate"):
-            st.markdown(f"""<div class="metric-card">
-                <div class="metric-label">Inbox Rotation Date</div>
-                <div class="metric-value-white" style="font-size:1.2rem">{r['email_rotate'].strftime('%b %d, %Y')}</div>
-                <div class="metric-desc">After 20 sending days</div>
-            </div>""", unsafe_allow_html=True)
-        else:
-            st.markdown(f"""<div class="metric-card">
-                <div class="metric-label">Inbox Rotation</div>
-                <div class="metric-value-white">20</div>
-                <div class="metric-desc">Days per cycle</div>
-            </div>""", unsafe_allow_html=True)
+    st.divider()
 
-    # ── ROTATION SCHEDULE (only if dates provided) ────────────────────────────
+    # ══ EMAIL ═════════════════════════════════════════════════════════════════
+    channel_banner("📧", "Email", "Verified emails only · CAN-SPAM compliant", CLR_PURPLE)
+    ek = st.columns(4)
+    kpi_card(ek[0], "Emails / Day", f"{r['emails_per_day']:,}", "Total ÷ 20 days")
+    kpi_card(ek[1], "Inboxes Needed", f"{r['inboxes_needed']:,}", "÷ 35/inbox/day")
+    kpi_card(ek[2], "Domains Needed", f"{r['domains_needed']:,}", "÷ 5 inboxes/domain")
+    kpi_card(ek[3], "Domain Daily Cap", f"{r['domain_capacity']:,}", "Domains × 175/day")
+
+    eg1, eg2 = st.columns([1, 1])
+    with eg1:
+        st.plotly_chart(gauge_chart(r["emails_per_inbox"], MAX_EMAILS_PER_INBOX,
+                        "Emails / Inbox / Day", ""), width='stretch',
+                        config={"displayModeBar": False}, key="g_email")
+        st.caption(f"Limit: {MAX_EMAILS_PER_INBOX}/inbox/day · "
+                   + ("✅ within limit" if r['email_check_ok'] else "⛔ over limit"))
+    with eg2:
+        st.plotly_chart(bar_breakdown(
+            ["Inboxes", "Domains", "Cap ÷ 100"],
+            [r["inboxes_needed"], r["domains_needed"], max(1, r["domain_capacity"] // 100)],
+            [CLR_PURPLE, "#B79AF3", CLR_INDIGO],
+            "Email Infrastructure"), width='stretch',
+            config={"displayModeBar": False}, key="b_email")
+
+    # ══ ROTATION TIMELINE ═════════════════════════════════════════════════════
     if start_date and r.get("rotate_out_1"):
-        st.markdown('<div class="gold-divider"></div>', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">▸ Rotation Schedule</div>', unsafe_allow_html=True)
-
-        rot_data = [
-            {"Asset": "📞 Caller IDs", "Rotate Every": "10 calling days",
-             "Trigger": "1,500 dials", "Rotate Out #1": r['rotate_out_1'].strftime('%b %d, %Y'),
-             "Rotate Out #2": r['rotate_out_2'].strftime('%b %d, %Y') if r.get('rotate_out_2') else "—"},
-            {"Asset": "💬 SMS Numbers", "Rotate Every": "10 sending days",
-             "Trigger": "5,000 texts", "Rotate Out #1": r['rotate_out_1'].strftime('%b %d, %Y'),
-             "Rotate Out #2": r['rotate_out_2'].strftime('%b %d, %Y') if r.get('rotate_out_2') else "—"},
-            {"Asset": "📧 Email Inboxes", "Rotate Every": "20 sending days",
-             "Trigger": "700 emails", "Rotate Out #1": r['email_rotate'].strftime('%b %d, %Y') if r.get('email_rotate') else "—",
-             "Rotate Out #2": "—"},
+        st.divider()
+        st.markdown("##### 🗓️&nbsp;&nbsp;**Rotation Schedule**")
+        events = [
+            {"task": "📞 Caller IDs", "start": start_date, "end": r["rotate_out_1"], "color": CLR_BLUE},
+            {"task": "📞 Caller IDs (cyc 2)", "start": r["rotate_out_1"], "end": r["rotate_out_2"], "color": "#9AB6F5"},
+            {"task": "💬 SMS Numbers", "start": start_date, "end": r["rotate_out_1"], "color": CLR_GREEN},
+            {"task": "💬 SMS Numbers (cyc 2)", "start": r["rotate_out_1"], "end": r["rotate_out_2"], "color": "#7DD3A8"},
+            {"task": "📧 Email Inboxes", "start": start_date, "end": r["email_rotate"], "color": CLR_PURPLE},
         ]
-
-        for row in rot_data:
-            st.markdown(f"""
-            <div class="rot-card">
-                <div class="rot-asset">{row['Asset']}</div>
-                <div class="rot-row">
-                    <div class="rot-item"><div class="rot-key">Rotate Every</div><div class="rot-val">{row['Rotate Every']}</div></div>
-                    <div class="rot-item"><div class="rot-key">Cumulative Trigger</div><div class="rot-val">{row['Trigger']}</div></div>
-                    <div class="rot-item"><div class="rot-key">Rotate Out #1</div><div class="rot-val">{row['Rotate Out #1']}</div></div>
-                    <div class="rot-item"><div class="rot-key">Rotate Out #2</div><div class="rot-val">{row['Rotate Out #2']}</div></div>
-                </div>
-            </div>""", unsafe_allow_html=True)
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
+        if r.get("warmup_start"):
+            events.insert(0, {"task": "📧 Email Warmup", "start": r["warmup_start"], "end": start_date, "color": CLR_AMBER})
+        st.plotly_chart(timeline_chart(events), width='stretch',
+                        config={"displayModeBar": False}, key="tl_rot")
+        tcols = st.columns(3)
+        kpi_card(tcols[0], "Campaign End", r["campaign_end"].strftime("%b %d, %Y"), "20 business days")
+        kpi_card(tcols[1], "Warmup Start", r["warmup_start"].strftime("%b %d, %Y"), "Start − 30 days")
+        kpi_card(tcols[2], "Email Rotation", r["email_rotate"].strftime("%b %d, %Y"), "After 20 sending days")
 
 def page_reports():
     auto_phones = st.session_state.get("ppl_orig_phones", 0)
@@ -1160,7 +920,7 @@ with st.sidebar:
         is_active = st.session_state.current_page == name
         if st.button(f"{icon}  {name}", key=f"nav_{name}",
                      type="primary" if is_active else "secondary",
-                     use_container_width=True):
+                     width='stretch'):
             st.session_state.current_page = name
             st.rerun()
 
