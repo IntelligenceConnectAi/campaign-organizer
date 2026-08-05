@@ -908,7 +908,7 @@ div[data-testid="stFileUploaderDropzone"] {
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-NAV_PAGES = [("People Leads","👤"), ("Business Leads","🏢"), ("Regarding Reports","📊")]
+NAV_PAGES = [("People Leads","👤"), ("Business Leads","🏢"), ("Guardrails Reports","📊")]
 
 if "current_page" not in st.session_state:
     st.session_state.current_page = "People Leads"
