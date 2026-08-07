@@ -318,7 +318,7 @@ def page_people_leads():
     step_header(3, "📣", "Marketing Process")
     dialer, sms, email = marketing_process_block("ppl_mkt")
 
-    step_header(4, "🏠", "Properties / Seller Leads", optional=True)
+    step_header(4, "🏠", "People Leads", optional=True)
     p_dialer, p_sms, p_email = marketing_process_block("ppl_prop")
 
     step_header(5, "🔀", "Monthly Split", optional=True)
