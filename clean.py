@@ -62,8 +62,12 @@ def calc_week_ranges(total, n_splits):
     return ranges
 
 # ── MERGE TO DISK (memory safe) ──────────────────────────────────────────────
-def merge_to_disk(files, tmp_path):
-    """Reads files one by one and writes to disk. Returns (total_rows, orig_phones, orig_emails)."""
+def merge_to_disk(files, tmp_path, include_dnc=True):
+    """Reads files one by one and writes to disk. Returns (total_rows, orig_phones, orig_emails).
+    If include_dnc is False, any phone whose matching 'Phone N DNC' cell is 'Public DNC'
+    is blanked out (phone number + phone type) right at the source, so no downstream
+    output (dialer / sms / email / properties) ever contains a DNC number.
+    Phone counts are computed AFTER this scrub, so the report reflects usable numbers."""
     total_rows  = 0
     orig_phones = 0
     orig_emails = 0
@@ -74,7 +78,20 @@ def merge_to_disk(files, tmp_path):
     with open(tmp_path, "w", newline="", encoding="utf-8") as out_f:
         for uf in files:
             df = pd.read_excel(uf, dtype=str)
+
+            # ── DNC scrub (before dropping DNC columns) ──────────────────────
+            if not include_dnc:
+                for phone_col, type_col, _e in PHONE_GROUPS:
+                    dnc_col = f"{phone_col} DNC"
+                    if dnc_col in df.columns and phone_col in df.columns:
+                        mask = df[dnc_col].apply(
+                            lambda x: str(x).strip().upper() == "PUBLIC DNC")
+                        df.loc[mask, phone_col] = ""
+                        if type_col in df.columns:
+                            df.loc[mask, type_col] = ""
+
             df.drop(columns=[c for c in DNC_COLS if c in df.columns], inplace=True)
+
             for col in phone_cols:
                 if col in df.columns:
                     orig_phones += df[col].apply(
@@ -312,13 +329,22 @@ def page_people_leads():
     if files:
         st.success(f"✅ {len(files)} file(s) uploaded")
 
+    dnc_choice = st.radio(
+        "📵 Do you want DNC phone numbers included?",
+        ["No — remove Public DNC numbers", "Yes — keep all numbers"],
+        index=0, key="ppl_dnc", horizontal=True,
+    )
+    include_dnc = dnc_choice.startswith("Yes")
+    if not include_dnc:
+        st.caption("Public DNC numbers will be removed from all outputs (Dialer, SMS, Email, Properties).")
+
     step_header(2, "🏷️", "Campaign Details")
     add_name, month, year, state, deal, out_name = campaign_details_block("ppl")
 
     step_header(3, "📣", "Marketing Process")
     dialer, sms, email = marketing_process_block("ppl_mkt")
 
-    step_header(4, "🏠", "People Leads", optional=True)
+    step_header(4, "🏠", "Properties / Seller Leads", optional=True)
     p_dialer, p_sms, p_email = marketing_process_block("ppl_prop")
 
     step_header(5, "🔀", "Monthly Split", optional=True)
@@ -344,7 +370,7 @@ def page_people_leads():
             tail = get_tail(add_name, month, year, state, deal, out_name)
 
             with st.spinner("📥 Merging files... please wait"):
-                total_rows, orig_phones, orig_emails = merge_to_disk(files, TMP_MERGED)
+                total_rows, orig_phones, orig_emails = merge_to_disk(files, TMP_MERGED, include_dnc=include_dnc)
             st.info(f"📊 Merged {total_rows:,} rows from {len(files)} file(s)")
 
             mkt_parts  = {}
@@ -908,7 +934,7 @@ div[data-testid="stFileUploaderDropzone"] {
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-NAV_PAGES = [("People Leads","👤"), ("Business Leads","🏢"), ("Guardrails Reports","📊")]
+NAV_PAGES = [("People Leads","👤"), ("Business Leads","🏢"), ("Regarding Reports","📊")]
 
 if "current_page" not in st.session_state:
     st.session_state.current_page = "People Leads"
