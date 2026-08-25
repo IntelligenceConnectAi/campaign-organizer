@@ -329,13 +329,26 @@ def page_people_leads():
     if files:
         st.success(f"✅ {len(files)} file(s) uploaded")
 
+    st.markdown("##### 📵&nbsp;&nbsp;**DNC Phone Numbers**")
     dnc_choice = st.radio(
-        "📵 Do you want DNC phone numbers included?",
+        "Do you want DNC phone numbers included?",
         ["No — remove Public DNC numbers", "Yes — keep all numbers"],
         index=0, key="ppl_dnc", horizontal=True,
     )
     include_dnc = dnc_choice.startswith("Yes")
-    if not include_dnc:
+    dnc_agreed = True  # default true for the "No" path
+
+    if include_dnc:
+        st.warning(
+            "**⚠️ Please note:** DNC = Do-Not-Call / Do-Not-Disturb numbers.\n\n"
+            "You are **solely responsible** for any DNC numbers or anything else. "
+            "We will **not** be responsible for this. This task is entirely your responsibility."
+        )
+        dnc_agreed = st.checkbox(
+            "I agree to the Terms & Conditions and I have read all the terms and conditions.",
+            key="ppl_dnc_agree",
+        )
+    else:
         st.caption("Public DNC numbers will be removed from all outputs (Dialer, SMS, Email, Properties).")
 
     step_header(2, "🏷️", "Campaign Details")
@@ -362,7 +375,7 @@ def page_people_leads():
     else:
         details_ok = bool(out_name and out_name.strip())
 
-    ready = bool(files and details_ok and (mkt_selected or prop_selected))
+    ready = bool(files and details_ok and (mkt_selected or prop_selected) and dnc_agreed)
 
     if st.button("⚙️ Process Files", width='stretch', type="primary",
                  disabled=not ready, key="ppl_process"):
@@ -446,6 +459,8 @@ def page_people_leads():
                 st.warning("⚠️ Please enter the Output File Name.")
         if not (mkt_selected or prop_selected):
             st.warning("⚠️ Please select at least one output type.")
+        if include_dnc and not dnc_agreed:
+            st.warning("⚠️ Please accept the DNC terms and conditions to include DNC numbers.")
 
 # ── PAGE: BUSINESS LEADS ─────────────────────────────────────────────────────
 def page_business_leads():
