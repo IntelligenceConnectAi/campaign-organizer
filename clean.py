@@ -31,6 +31,7 @@ MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN",
 
 TMP_MERGED = "/tmp/merged.csv"
 TMP_PROPS  = "/tmp/props.csv"
+TMP_BIZ_MERGED = "/tmp/biz_merged.csv"
 
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 def get_val(row, col):
@@ -77,7 +78,10 @@ def merge_to_disk(files, tmp_path, include_dnc=True):
 
     with open(tmp_path, "w", newline="", encoding="utf-8") as out_f:
         for uf in files:
-            df = pd.read_excel(uf, dtype=str)
+            if uf.name.lower().endswith(".csv"):
+                df = pd.read_csv(uf, dtype=str)
+            else:
+                df = pd.read_excel(uf, dtype=str)
 
             # ── DNC scrub (before dropping DNC columns) ──────────────────────
             if not include_dnc:
@@ -107,6 +111,26 @@ def merge_to_disk(files, tmp_path, include_dnc=True):
             gc.collect()
 
     return total_rows, int(orig_phones), int(orig_emails)
+
+# ── MERGE (Business Leads: xlsx + csv, no DNC scrub) ─────────────────────────
+def merge_biz_to_disk(files, tmp_path):
+    """Reads business lead files (xlsx or csv) one by one and writes to disk.
+    Drops DNC columns if present (harmless if absent). Returns total_rows."""
+    total_rows = 0
+    header_written = False
+    with open(tmp_path, "w", newline="", encoding="utf-8") as out_f:
+        for uf in files:
+            if uf.name.lower().endswith(".csv"):
+                df = pd.read_csv(uf, dtype=str)
+            else:
+                df = pd.read_excel(uf, dtype=str)
+            df.drop(columns=[c for c in DNC_COLS if c in df.columns], inplace=True)
+            df.to_csv(out_f, index=False, header=not header_written)
+            total_rows += len(df)
+            header_written = True
+            del df
+            gc.collect()
+    return total_rows
 
 # ── FILTER PROPERTIES TO DISK ────────────────────────────────────────────────
 def filter_properties_to_disk(src_path, dst_path):
@@ -323,8 +347,8 @@ def page_people_leads():
     page_title("👤", "People Leads", "Upload, clean, and organize your people lead campaigns")
 
     step_header(1, "📁", "Upload Lead List")
-    files = st.file_uploader("Upload one or more Excel files (.xlsx)",
-                              type=["xlsx"], accept_multiple_files=True, key="ppl_upload",
+    files = st.file_uploader("Upload one or more Excel or CSV files (.xlsx, .csv)",
+                              type=["xlsx","csv"], accept_multiple_files=True, key="ppl_upload",
                               label_visibility="collapsed")
     if files:
         st.success(f"✅ {len(files)} file(s) uploaded")
@@ -476,19 +500,24 @@ def page_business_leads():
     step_header(2, "🏷️", "Campaign Name")
     add_name, month, year, state, deal, out_name = campaign_details_block("biz")
 
-    step_header(3, "🔀", "Monthly Split", optional=True)
+    step_header(3, "📣", "Marketing Process")
+    dialer, sms, email = marketing_process_block("biz_mkt")
+
+    step_header(4, "🔀", "Monthly Split", optional=True)
     do_split = st.checkbox("🔀 Split output into multiple files", key="biz_dosplit")
     n_splits = 1
     if do_split:
         n_splits = st.number_input("How many files to split into?", min_value=2, max_value=50,
                                    value=5, step=1, key="biz_nsplits")
 
+    mkt_selected = dialer or sms or email
+
     if add_name:
         details_ok = bool(state and state.strip() and year and year.strip() and deal and deal.strip())
     else:
         details_ok = bool(out_name and out_name.strip())
 
-    ready = bool(files and details_ok)
+    ready = bool(files and details_ok and mkt_selected)
 
     if st.button("⚙️ Process Files", width='stretch', type="primary",
                  disabled=not ready, key="biz_process"):
@@ -496,42 +525,19 @@ def page_business_leads():
             tail = get_tail(add_name, month, year, state, deal, out_name)
 
             with st.spinner("📥 Merging files..."):
-                frames = []
-                for uf in files:
-                    if uf.name.lower().endswith(".csv"):
-                        frames.append(pd.read_csv(uf, dtype=str))
-                    else:
-                        frames.append(pd.read_excel(uf, dtype=str))
-                merged = pd.concat(frames, ignore_index=True)
-                del frames
-                gc.collect()
+                total_rows = merge_biz_to_disk(files, TMP_BIZ_MERGED)
+            st.info(f"📊 Merged {total_rows:,} rows from {len(files)} file(s)")
 
-            row_count = len(merged)
-            name_builder = lambda wk: build_campaign("LEADS", tail, wk=wk)
-            base_parts = []
-            if do_split and n_splits > 1:
-                chunk = math.ceil(row_count / int(n_splits))
-                for i in range(int(n_splits)):
-                    c = merged.iloc[i*chunk:(i+1)*chunk].copy()
-                    if c.empty:
-                        continue
-                    name = name_builder(i+1)
-                    c["Campaign Name"] = name
-                    b = io.StringIO()
-                    c.to_csv(b, index=False)
-                    base_parts.append((name, b.getvalue().encode("utf-8")))
-            else:
-                b = io.StringIO()
-                merged.to_csv(b, index=False)
-                base_parts.append((name_builder(None), b.getvalue().encode("utf-8")))
+            with st.spinner("⚙️ Processing Marketing channels..."):
+                mkt_parts, mkt_counts = run_channels(
+                    TMP_BIZ_MERGED, tail, None, dialer, sms, email, do_split, int(n_splits))
 
-            del merged
+            st.session_state.biz_mkt_zip     = build_zip(mkt_parts) if mkt_parts else None
+            st.session_state.biz_mkt_name    = f"Business Leads - {tail}.zip"
+            st.session_state.biz_mkt_counts  = mkt_counts
+            st.session_state.biz_total       = total_rows
+            st.session_state.biz_processed   = True
             gc.collect()
-
-            st.session_state.biz_base_zip   = build_zip({"LEADS": base_parts})
-            st.session_state.biz_base_name  = f"Business Leads - {tail}.zip"
-            st.session_state.biz_total      = row_count
-            st.session_state.biz_processed  = True
 
         except Exception as e:
             st.error(f"❌ Error: {e}")
@@ -539,11 +545,17 @@ def page_business_leads():
     if st.session_state.get("biz_processed"):
         st.success("✅ **Processing Complete!**")
         st.info(f"📊 Total rows merged: **{st.session_state.biz_total:,}**")
+
+        if st.session_state.get("biz_mkt_counts"):
+            st.markdown("**📋 Marketing Process:**")
+            for k, v in st.session_state.biz_mkt_counts.items():
+                st.success(f"{k.title()}: **{v:,}**")
+
         step_header("⬇", "📦", "Downloads")
-        if st.session_state.get("biz_base_zip"):
+        if st.session_state.get("biz_mkt_zip"):
             st.download_button("⬇️ Download Business Leads (ZIP)",
-                               data=st.session_state.biz_base_zip,
-                               file_name=st.session_state.biz_base_name,
+                               data=st.session_state.biz_mkt_zip,
+                               file_name=st.session_state.biz_mkt_name,
                                mime="application/zip", width='stretch',
                                type="primary", key="biz_dl")
 
@@ -554,6 +566,8 @@ def page_business_leads():
             if not (deal and deal.strip()):   st.warning("⚠️ Please enter Type of Deal.")
         else:
             if not (out_name and out_name.strip()): st.warning("⚠️ Please enter Output File Name.")
+        if not mkt_selected:
+            st.warning("⚠️ Please select at least one channel (Dialer / SMS / Email).")
 
 # ── REPORTING CONSTANTS ───────────────────────────────────────────────────────
 MAX_DIALS_PER_NUMBER    = 150
