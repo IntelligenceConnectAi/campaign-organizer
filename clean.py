@@ -236,6 +236,77 @@ def process_email_csv(src, campaign_name):
     gc.collect()
     return total, buf.getvalue().encode("utf-8")
 
+# ── BUSINESS LEADS PROCESS FUNCTIONS (single Phone / Email columns) ─────────
+# Business Leads (e.g. Google Maps scrapes) use one "Phone" + one "Email"
+# column instead of the grouped Phone 1..5 format used by People Leads.
+BIZ_PHONE_COL = "Phone"
+BIZ_EMAIL_COL = "Email"
+
+def process_biz_dialer_csv(src, campaign_name):
+    df = pd.read_csv(src, dtype=str)
+    other_cols  = [c for c in df.columns if c != BIZ_PHONE_COL]
+    output_cols = ["Campaign Name", "Phone Number"] + other_cols
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=output_cols)
+    writer.writeheader()
+    total = 0
+    for _, row in df.iterrows():
+        phone_val = clean_phone(get_val(row, BIZ_PHONE_COL))
+        if not phone_val:
+            continue
+        new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val}
+        for col in other_cols:
+            new_row[col] = get_val(row, col)
+        writer.writerow(new_row)
+        total += 1
+    del df
+    gc.collect()
+    return total, buf.getvalue().encode("utf-8")
+
+def process_biz_sms_csv(src, campaign_name):
+    df = pd.read_csv(src, dtype=str)
+    other_cols  = [c for c in df.columns if c not in (BIZ_PHONE_COL, BIZ_EMAIL_COL)]
+    output_cols = ["Campaign Name", "Phone Number", "Email"] + other_cols
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=output_cols)
+    writer.writeheader()
+    total = 0
+    for _, row in df.iterrows():
+        phone_val = clean_phone(get_val(row, BIZ_PHONE_COL))
+        email_val = get_val(row, BIZ_EMAIL_COL)
+        if not phone_val and not email_val:
+            continue
+        new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val, "Email": email_val}
+        for col in other_cols:
+            new_row[col] = get_val(row, col)
+        writer.writerow(new_row)
+        total += 1
+    del df
+    gc.collect()
+    return total, buf.getvalue().encode("utf-8")
+
+def process_biz_email_csv(src, campaign_name):
+    df = pd.read_csv(src, dtype=str)
+    other_cols  = [c for c in df.columns if c not in (BIZ_PHONE_COL, BIZ_EMAIL_COL)]
+    output_cols = ["Campaign Name", "Phone Number", "Email"] + other_cols
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=output_cols)
+    writer.writeheader()
+    total = 0
+    for _, row in df.iterrows():
+        email_val = get_val(row, BIZ_EMAIL_COL)
+        if not email_val:
+            continue
+        phone_val = clean_phone(get_val(row, BIZ_PHONE_COL))
+        new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val, "Email": email_val}
+        for col in other_cols:
+            new_row[col] = get_val(row, col)
+        writer.writerow(new_row)
+        total += 1
+    del df
+    gc.collect()
+    return total, buf.getvalue().encode("utf-8")
+
 # ── SPLIT CSV BYTES ──────────────────────────────────────────────────────────
 def split_csv_bytes(csv_bytes, name_builder, n_splits, do_split):
     df = pd.read_csv(io.StringIO(csv_bytes.decode("utf-8")), dtype=str)
@@ -288,6 +359,30 @@ def run_channels(src_path, tail, tag, do_dialer, do_sms, do_email, do_split, n_s
     if do_email:
         campaign = build_campaign("EMAIL", tail, tag=tag)
         rows, data = process_email_csv(src_path, campaign)
+        counts["email"] = rows
+        parts = split_csv_bytes(data, lambda wk: build_campaign("EMAIL", tail, tag=tag, wk=wk), n_splits, do_split)
+        channel_parts["EMAIL"] = parts
+    return channel_parts, counts
+
+# ── RUN CHANNEL PROCESSING (Business Leads: single Phone/Email columns) ─────
+def run_channels_biz(src_path, tail, tag, do_dialer, do_sms, do_email, do_split, n_splits):
+    channel_parts = {}
+    counts = {}
+    if do_dialer:
+        campaign = build_campaign("CC", tail, tag=tag)
+        rows, data = process_biz_dialer_csv(src_path, campaign)
+        counts["dialer"] = rows
+        parts = split_csv_bytes(data, lambda wk: build_campaign("CC", tail, tag=tag, wk=wk), n_splits, do_split)
+        channel_parts["CC"] = parts
+    if do_sms:
+        campaign = build_campaign("SMS", tail, tag=tag)
+        rows, data = process_biz_sms_csv(src_path, campaign)
+        counts["sms"] = rows
+        parts = split_csv_bytes(data, lambda wk: build_campaign("SMS", tail, tag=tag, wk=wk), n_splits, do_split)
+        channel_parts["SMS"] = parts
+    if do_email:
+        campaign = build_campaign("EMAIL", tail, tag=tag)
+        rows, data = process_biz_email_csv(src_path, campaign)
         counts["email"] = rows
         parts = split_csv_bytes(data, lambda wk: build_campaign("EMAIL", tail, tag=tag, wk=wk), n_splits, do_split)
         channel_parts["EMAIL"] = parts
@@ -529,7 +624,7 @@ def page_business_leads():
             st.info(f"📊 Merged {total_rows:,} rows from {len(files)} file(s)")
 
             with st.spinner("⚙️ Processing Marketing channels..."):
-                mkt_parts, mkt_counts = run_channels(
+                mkt_parts, mkt_counts = run_channels_biz(
                     TMP_BIZ_MERGED, tail, None, dialer, sms, email, do_split, int(n_splits))
 
             st.session_state.biz_mkt_zip     = build_zip(mkt_parts) if mkt_parts else None
