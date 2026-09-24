@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
-import io
-import math
-import zipfile
-from datetime import date, timedelta, datetime
 import csv
-import gc
+import os
+import io
+import zipfile
+import math
 import warnings
+from docx import Document
+from docx.shared import Pt, RGBColor
 warnings.filterwarnings("ignore")
 
 # ── CONFIG ───────────────────────────────────────────────────────────────────
@@ -29,9 +30,74 @@ MLS_STATUSES = [
 MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN",
           "JUL","AUG","SEP","OCT","NOV","DEC"]
 
-TMP_MERGED = "/tmp/merged.csv"
-TMP_PROPS  = "/tmp/props.csv"
-TMP_BIZ_MERGED = "/tmp/biz_merged.csv"
+MONTH_FULL = {
+    "JAN":"January","FEB":"February","MAR":"March","APR":"April",
+    "MAY":"May","JUN":"June","JUL":"July","AUG":"August",
+    "SEP":"September","OCT":"October","NOV":"November","DEC":"December"
+}
+
+DEAL_TYPES = [
+    "LUXURY LAND","NON-LUXURY","LAND LUXURY SFH","NON-LUXURY SFH",
+    "TEARDOWN","INFILL LOT","LARGE ACREAGE","BUILDER LOT",
+]
+
+# Business Leads use a single Phone / single Email column (e.g. Google Maps
+# scrapes) instead of the grouped Phone 1..5 format used by Sales/MLS.
+BIZ_PHONE_COL = "Phone"
+BIZ_EMAIL_COL = "Email"
+
+TMP_MERGED       = "/tmp/merged.csv"
+TMP_SALES        = "/tmp/sales.csv"
+TMP_MLS          = "/tmp/mls.csv"
+TMP_DIALER       = "/tmp/dialer_output.csv"
+TMP_SMS          = "/tmp/sms_output.csv"
+TMP_EMAIL        = "/tmp/email_output.csv"
+
+# MLS Seller List temp outputs
+TMP_MLS_DIALER   = "/tmp/mls_seller_dialer_output.csv"
+TMP_MLS_SMS      = "/tmp/mls_seller_sms_output.csv"
+TMP_MLS_EMAIL    = "/tmp/mls_seller_email_output.csv"
+
+# MLS Agent List temp outputs
+TMP_MLS_AGENT_DIALER = "/tmp/mls_agent_dialer_output.csv"
+TMP_MLS_AGENT_SMS    = "/tmp/mls_agent_sms_output.csv"
+TMP_MLS_AGENT_EMAIL  = "/tmp/mls_agent_email_output.csv"
+
+# Business Leads temp outputs
+TMP_BIZ_MERGED   = "/tmp/biz_merged.csv"
+TMP_BIZ_DIALER   = "/tmp/biz_dialer_output.csv"
+TMP_BIZ_SMS      = "/tmp/biz_sms_output.csv"
+TMP_BIZ_EMAIL    = "/tmp/biz_email_output.csv"
+
+# ── SESSION STATE ────────────────────────────────────────────────────────────
+for key, val in {
+    "processed": False,
+    "sales_results": {},
+    "mls_results": {},
+    "total_merged": 0,
+    "orig_phone_count": 0,
+    "orig_email_count": 0,
+    "sales_zip_buffer": None,
+    "mls_seller_zip_buffer": None,
+    "mls_agent_zip_buffer": None,
+    "sales_zip_name": "",
+    "mls_seller_zip_name": "",
+    "mls_agent_zip_name": "",
+    "report_buffer": None,
+    # Business Leads
+    "biz_processed": False,
+    "biz_results": {},
+    "biz_total_merged": 0,
+    "biz_orig_phone_count": 0,
+    "biz_orig_email_count": 0,
+    "biz_zip_buffer": None,
+    "biz_zip_name": "",
+    "biz_report_buffer": None,
+    # Navigation
+    "current_page": "List Cleaner",
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
 
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 def get_val(row, col):
@@ -48,10 +114,29 @@ def clean_phone(val):
     except:
         return val
 
-def build_campaign(channel, tail, tag=None, wk=None):
-    tag_part = f" - {tag}" if tag else ""
+def clean_email(val):
+    """Trims/lowercases the email and blanks it out if it doesn't look like a
+    valid address (no '@', or no '.' in the domain part), so malformed or
+    junk emails get dropped the same way blank ones do."""
+    if not val:
+        return ""
+    val = str(val).strip()
+    if not val or val.lower() == "nan":
+        return ""
+    if "@" not in val:
+        return ""
+    local, _, domain = val.partition("@")
+    if not local or "." not in domain:
+        return ""
+    return val.lower()
+
+def make_campaign(channel, month, year, state, deal, mls=False, mls_type=None, wk=None):
+    if mls:
+        mls_part = f" - MLS - {mls_type}" if mls_type else " - MLS"
+    else:
+        mls_part = ""
     wk_part  = f" - WK{wk}" if wk else ""
-    return f"{channel}{tag_part}{wk_part} - {tail}"
+    return f"{channel}{mls_part}{wk_part} - {month} - {year} - {state} - {deal}"
 
 def calc_week_ranges(total, n_splits):
     chunk = math.ceil(total / n_splits)
@@ -62,40 +147,19 @@ def calc_week_ranges(total, n_splits):
         ranges.append(f"WK{i+1}: {start:,} – {end:,} ({end-start+1:,} contacts)")
     return ranges
 
-# ── MERGE TO DISK (memory safe) ──────────────────────────────────────────────
-def merge_to_disk(files, tmp_path, include_dnc=True):
-    """Reads files one by one and writes to disk. Returns (total_rows, orig_phones, orig_emails).
-    If include_dnc is False, any phone whose matching 'Phone N DNC' cell is 'Public DNC'
-    is blanked out (phone number + phone type) right at the source, so no downstream
-    output (dialer / sms / email / properties) ever contains a DNC number.
-    Phone counts are computed AFTER this scrub, so the report reflects usable numbers."""
-    total_rows  = 0
-    orig_phones = 0
-    orig_emails = 0
-    phone_cols  = [p for p, t, e in PHONE_GROUPS]
-    email_cols  = [e for p, t, e in PHONE_GROUPS]
+# ── MERGE + SPLIT SALES / MLS ────────────────────────────────────────────────
+def merge_and_split(uploaded_files):
+    total_rows   = 0
+    orig_phones  = 0
+    orig_emails  = 0
     header_written = False
+    phone_cols = [p for p, t, e in PHONE_GROUPS]
+    email_cols = [e for p, t, e in PHONE_GROUPS]
 
-    with open(tmp_path, "w", newline="", encoding="utf-8") as out_f:
-        for uf in files:
-            if uf.name.lower().endswith(".csv"):
-                df = pd.read_csv(uf, dtype=str)
-            else:
-                df = pd.read_excel(uf, dtype=str)
-
-            # ── DNC scrub (before dropping DNC columns) ──────────────────────
-            if not include_dnc:
-                for phone_col, type_col, _e in PHONE_GROUPS:
-                    dnc_col = f"{phone_col} DNC"
-                    if dnc_col in df.columns and phone_col in df.columns:
-                        mask = df[dnc_col].apply(
-                            lambda x: str(x).strip().upper() == "PUBLIC DNC")
-                        df.loc[mask, phone_col] = ""
-                        if type_col in df.columns:
-                            df.loc[mask, type_col] = ""
-
+    with open(TMP_MERGED, "w", newline="", encoding="utf-8") as out_f:
+        for uf in uploaded_files:
+            df = pd.read_excel(uf, dtype=str)
             df.drop(columns=[c for c in DNC_COLS if c in df.columns], inplace=True)
-
             for col in phone_cols:
                 if col in df.columns:
                     orig_phones += df[col].apply(
@@ -108,976 +172,850 @@ def merge_to_disk(files, tmp_path, include_dnc=True):
             total_rows += len(df)
             header_written = True
             del df
-            gc.collect()
+
+    # Sales file = full merged file as-is
+    df = pd.read_csv(TMP_MERGED, dtype=str)
+    df.to_csv(TMP_SALES, index=False)
+
+    # MLS file = blank rows (→ "Off Market") + known status rows
+    if "MLS Status" in df.columns:
+        blank_mask = df["MLS Status"].apply(lambda x: str(x).strip() in ("", "nan"))
+        known_mask = df["MLS Status"].apply(lambda x: str(x).strip().upper() in MLS_STATUSES)
+
+        mls_known        = df[known_mask].copy()
+        mls_blanks       = df[blank_mask].copy()
+        mls_blanks["MLS Status"] = "Off Market"
+        mls_df = pd.concat([mls_known, mls_blanks], ignore_index=True)
+    else:
+        mls_df = pd.DataFrame(columns=df.columns)
+
+    mls_df.to_csv(TMP_MLS, index=False)
+    del df, mls_df
 
     return total_rows, int(orig_phones), int(orig_emails)
 
-# ── MERGE (Business Leads: xlsx + csv, no DNC scrub) ─────────────────────────
-def merge_biz_to_disk(files, tmp_path):
-    """Reads business lead files (xlsx or csv) one by one and writes to disk.
-    Drops DNC columns if present (harmless if absent). Returns total_rows."""
-    total_rows = 0
+# ── MERGE (Business Leads: single Phone / Email columns, xlsx + csv) ────────
+def merge_biz_to_disk(uploaded_files):
+    total_rows   = 0
+    orig_phones  = 0
+    orig_emails  = 0
     header_written = False
-    with open(tmp_path, "w", newline="", encoding="utf-8") as out_f:
-        for uf in files:
+
+    with open(TMP_BIZ_MERGED, "w", newline="", encoding="utf-8") as out_f:
+        for uf in uploaded_files:
             if uf.name.lower().endswith(".csv"):
                 df = pd.read_csv(uf, dtype=str)
             else:
                 df = pd.read_excel(uf, dtype=str)
             df.drop(columns=[c for c in DNC_COLS if c in df.columns], inplace=True)
+            if BIZ_PHONE_COL in df.columns:
+                orig_phones += df[BIZ_PHONE_COL].apply(
+                    lambda x: 1 if pd.notna(x) and str(x).strip() not in ("","nan") else 0).sum()
+            if BIZ_EMAIL_COL in df.columns:
+                orig_emails += df[BIZ_EMAIL_COL].apply(
+                    lambda x: 1 if pd.notna(x) and str(x).strip() not in ("","nan") else 0).sum()
             df.to_csv(out_f, index=False, header=not header_written)
             total_rows += len(df)
             header_written = True
             del df
-            gc.collect()
-    return total_rows
 
-# ── FILTER PROPERTIES TO DISK ────────────────────────────────────────────────
-def filter_properties_to_disk(src_path, dst_path):
-    df = pd.read_csv(src_path, dtype=str)
-    if "MLS Status" not in df.columns:
-        pd.DataFrame(columns=df.columns).to_csv(dst_path, index=False)
-        return 0
-    blank_mask = df["MLS Status"].apply(lambda x: str(x).strip() in ("", "nan"))
-    known_mask = df["MLS Status"].apply(lambda x: str(x).strip().upper() in MLS_STATUSES)
-    known  = df[known_mask].copy()
-    blanks = df[blank_mask].copy()
-    blanks["MLS Status"] = "Off Market"
-    result = pd.concat([known, blanks], ignore_index=True)
-    result.to_csv(dst_path, index=False)
-    rows = len(result)
-    del df, known, blanks, result
-    gc.collect()
-    return rows
+    return total_rows, int(orig_phones), int(orig_emails)
 
-# ── PROCESS FUNCTIONS (disk → disk) ─────────────────────────────────────────
-def process_dialer_csv(src, campaign_name):
-    df = pd.read_csv(src, dtype=str)
+# ── GENERIC PROCESS FUNCTIONS (Sales/MLS: grouped Phone 1..5 columns) ───────
+def process_dialer_file(src_csv, out_csv, campaign_name):
+    df = pd.read_csv(src_csv, dtype=str)
     all_phone_cols = [p for p, t, e in PHONE_GROUPS] + [t for p, t, e in PHONE_GROUPS]
     other_cols     = [c for c in df.columns if c not in all_phone_cols]
     active_groups  = [(p, t) for p, t, e in PHONE_GROUPS if p in df.columns]
     output_cols    = ["Campaign Name", "Phone Number", "Phone Type"] + other_cols
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=output_cols)
-    writer.writeheader()
     total = 0
-    for _, row in df.iterrows():
-        for phone_col, type_col in active_groups:
-            phone_val = clean_phone(get_val(row, phone_col))
-            if not phone_val:
-                continue
-            new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val,
-                       "Phone Type": get_val(row, type_col)}
-            for col in other_cols:
-                new_row[col] = get_val(row, col)
-            writer.writerow(new_row)
-            total += 1
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=output_cols)
+        writer.writeheader()
+        for _, row in df.iterrows():
+            for phone_col, type_col in active_groups:
+                phone_val = clean_phone(get_val(row, phone_col))
+                if not phone_val:
+                    continue
+                new_row = {"Campaign Name": campaign_name,
+                           "Phone Number": phone_val,
+                           "Phone Type":   get_val(row, type_col)}
+                for col in other_cols:
+                    new_row[col] = get_val(row, col)
+                writer.writerow(new_row)
+                total += 1
     del df
-    gc.collect()
-    return total, buf.getvalue().encode("utf-8")
+    return total
 
-def process_sms_csv(src, campaign_name):
-    df = pd.read_csv(src, dtype=str)
-    all_pe = ([p for p, t, e in PHONE_GROUPS] + [t for p, t, e in PHONE_GROUPS] +
-              [e for p, t, e in PHONE_GROUPS if e in df.columns])
-    other_cols    = [c for c in df.columns if c not in all_pe]
+def process_sms_file(src_csv, out_csv, campaign_name):
+    df = pd.read_csv(src_csv, dtype=str)
+    all_phone_email_cols = ([p for p, t, e in PHONE_GROUPS] +
+                            [t for p, t, e in PHONE_GROUPS] +
+                            [e for p, t, e in PHONE_GROUPS if e in df.columns])
+    other_cols    = [c for c in df.columns if c not in all_phone_email_cols]
     active_groups = [(p, t, e) for p, t, e in PHONE_GROUPS if p in df.columns or e in df.columns]
     output_cols   = ["Campaign Name", "Phone Number", "Phone Type", "Email"] + other_cols
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=output_cols)
-    writer.writeheader()
     total = 0
-    for _, row in df.iterrows():
-        for phone_col, type_col, email_col in active_groups:
-            phone_val  = clean_phone(get_val(row, phone_col))
-            phone_type = get_val(row, type_col)
-            email_val  = get_val(row, email_col)
-            if phone_type.strip().lower() == "landline":
-                phone_val = ""
-            if not phone_val and not email_val:
-                continue
-            new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val,
-                       "Phone Type": phone_type, "Email": email_val}
-            for col in other_cols:
-                new_row[col] = get_val(row, col)
-            writer.writerow(new_row)
-            total += 1
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=output_cols)
+        writer.writeheader()
+        for _, row in df.iterrows():
+            for phone_col, type_col, email_col in active_groups:
+                phone_val  = clean_phone(get_val(row, phone_col))
+                phone_type = get_val(row, type_col)
+                email_val  = clean_email(get_val(row, email_col))
+                if phone_type.strip().lower() == "landline":
+                    phone_val = ""
+                if not phone_val and not email_val:
+                    continue
+                new_row = {"Campaign Name": campaign_name,
+                           "Phone Number": phone_val,
+                           "Phone Type":   phone_type,
+                           "Email":        email_val}
+                for col in other_cols:
+                    new_row[col] = get_val(row, col)
+                writer.writerow(new_row)
+                total += 1
     del df
-    gc.collect()
-    return total, buf.getvalue().encode("utf-8")
+    return total
 
-def process_email_csv(src, campaign_name):
-    df = pd.read_csv(src, dtype=str)
-    all_pe = ([p for p, t, e in PHONE_GROUPS] + [t for p, t, e in PHONE_GROUPS] +
-              [e for p, t, e in PHONE_GROUPS if e in df.columns])
-    other_cols    = [c for c in df.columns if c not in all_pe]
+def process_email_file(src_csv, out_csv, campaign_name):
+    df = pd.read_csv(src_csv, dtype=str)
+    all_phone_email_cols = ([p for p, t, e in PHONE_GROUPS] +
+                            [t for p, t, e in PHONE_GROUPS] +
+                            [e for p, t, e in PHONE_GROUPS if e in df.columns])
+    other_cols    = [c for c in df.columns if c not in all_phone_email_cols]
     active_groups = [(p, t, e) for p, t, e in PHONE_GROUPS if p in df.columns or e in df.columns]
     output_cols   = ["Campaign Name", "Phone Number", "Phone Type", "Email"] + other_cols
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=output_cols)
-    writer.writeheader()
     total = 0
-    for _, row in df.iterrows():
-        for phone_col, type_col, email_col in active_groups:
-            email_val = get_val(row, email_col)
-            if not email_val:
-                continue
-            phone_val  = clean_phone(get_val(row, phone_col))
-            phone_type = get_val(row, type_col)
-            if phone_type.strip().lower() == "landline":
-                phone_val = ""
-            new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val,
-                       "Phone Type": phone_type, "Email": email_val}
-            for col in other_cols:
-                new_row[col] = get_val(row, col)
-            writer.writerow(new_row)
-            total += 1
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=output_cols)
+        writer.writeheader()
+        for _, row in df.iterrows():
+            for phone_col, type_col, email_col in active_groups:
+                email_val = clean_email(get_val(row, email_col))
+                if not email_val:
+                    continue
+                phone_val  = clean_phone(get_val(row, phone_col))
+                phone_type = get_val(row, type_col)
+                if phone_type.strip().lower() == "landline":
+                    phone_val = ""
+                new_row = {"Campaign Name": campaign_name,
+                           "Phone Number": phone_val,
+                           "Phone Type":   phone_type,
+                           "Email":        email_val}
+                for col in other_cols:
+                    new_row[col] = get_val(row, col)
+                writer.writerow(new_row)
+                total += 1
     del df
-    gc.collect()
-    return total, buf.getvalue().encode("utf-8")
+    return total
 
 # ── BUSINESS LEADS PROCESS FUNCTIONS (single Phone / Email columns) ─────────
-# Business Leads (e.g. Google Maps scrapes) use one "Phone" + one "Email"
-# column instead of the grouped Phone 1..5 format used by People Leads.
-BIZ_PHONE_COL = "Phone"
-BIZ_EMAIL_COL = "Email"
-
-def process_biz_dialer_csv(src, campaign_name):
-    df = pd.read_csv(src, dtype=str)
+def process_biz_dialer_file(src_csv, out_csv, campaign_name):
+    df = pd.read_csv(src_csv, dtype=str)
     other_cols  = [c for c in df.columns if c != BIZ_PHONE_COL]
     output_cols = ["Campaign Name", "Phone Number"] + other_cols
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=output_cols)
-    writer.writeheader()
     total = 0
-    for _, row in df.iterrows():
-        phone_val = clean_phone(get_val(row, BIZ_PHONE_COL))
-        if not phone_val:
-            continue
-        new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val}
-        for col in other_cols:
-            new_row[col] = get_val(row, col)
-        writer.writerow(new_row)
-        total += 1
-    del df
-    gc.collect()
-    return total, buf.getvalue().encode("utf-8")
-
-def process_biz_sms_csv(src, campaign_name):
-    df = pd.read_csv(src, dtype=str)
-    other_cols  = [c for c in df.columns if c not in (BIZ_PHONE_COL, BIZ_EMAIL_COL)]
-    output_cols = ["Campaign Name", "Phone Number", "Email"] + other_cols
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=output_cols)
-    writer.writeheader()
-    total = 0
-    for _, row in df.iterrows():
-        phone_val = clean_phone(get_val(row, BIZ_PHONE_COL))
-        email_val = get_val(row, BIZ_EMAIL_COL)
-        if not phone_val and not email_val:
-            continue
-        new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val, "Email": email_val}
-        for col in other_cols:
-            new_row[col] = get_val(row, col)
-        writer.writerow(new_row)
-        total += 1
-    del df
-    gc.collect()
-    return total, buf.getvalue().encode("utf-8")
-
-def process_biz_email_csv(src, campaign_name):
-    df = pd.read_csv(src, dtype=str)
-    other_cols  = [c for c in df.columns if c not in (BIZ_PHONE_COL, BIZ_EMAIL_COL)]
-    output_cols = ["Campaign Name", "Phone Number", "Email"] + other_cols
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=output_cols)
-    writer.writeheader()
-    total = 0
-    for _, row in df.iterrows():
-        email_val = get_val(row, BIZ_EMAIL_COL)
-        if not email_val:
-            continue
-        phone_val = clean_phone(get_val(row, BIZ_PHONE_COL))
-        new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val, "Email": email_val}
-        for col in other_cols:
-            new_row[col] = get_val(row, col)
-        writer.writerow(new_row)
-        total += 1
-    del df
-    gc.collect()
-    return total, buf.getvalue().encode("utf-8")
-
-# ── SPLIT CSV BYTES ──────────────────────────────────────────────────────────
-def split_csv_bytes(csv_bytes, name_builder, n_splits, do_split):
-    df = pd.read_csv(io.StringIO(csv_bytes.decode("utf-8")), dtype=str)
-    if df.empty:
-        return []
-    if do_split and n_splits > 1:
-        total = len(df)
-        chunk = math.ceil(total / n_splits)
-        parts = []
-        for i in range(n_splits):
-            c = df.iloc[i * chunk:(i + 1) * chunk].copy()
-            if c.empty:
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=output_cols)
+        writer.writeheader()
+        for _, row in df.iterrows():
+            phone_val = clean_phone(get_val(row, BIZ_PHONE_COL))
+            if not phone_val:
                 continue
-            name = name_builder(i + 1)
-            c["Campaign Name"] = name
-            b = io.StringIO()
-            c.to_csv(b, index=False)
-            parts.append((name, b.getvalue().encode("utf-8")))
-        return parts
-    else:
-        name = name_builder(None)
-        return [(name, csv_bytes)]
+            new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val}
+            for col in other_cols:
+                new_row[col] = get_val(row, col)
+            writer.writerow(new_row)
+            total += 1
+    del df
+    return total
 
-# ── BUILD ZIP ────────────────────────────────────────────────────────────────
-def build_zip(channel_parts):
+def process_biz_sms_file(src_csv, out_csv, campaign_name):
+    df = pd.read_csv(src_csv, dtype=str)
+    other_cols  = [c for c in df.columns if c not in (BIZ_PHONE_COL, BIZ_EMAIL_COL)]
+    output_cols = ["Campaign Name", "Phone Number", "Email"] + other_cols
+    total = 0
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=output_cols)
+        writer.writeheader()
+        for _, row in df.iterrows():
+            phone_val = clean_phone(get_val(row, BIZ_PHONE_COL))
+            email_val = clean_email(get_val(row, BIZ_EMAIL_COL))
+            if not phone_val and not email_val:
+                continue
+            new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val, "Email": email_val}
+            for col in other_cols:
+                new_row[col] = get_val(row, col)
+            writer.writerow(new_row)
+            total += 1
+    del df
+    return total
+
+def process_biz_email_file(src_csv, out_csv, campaign_name):
+    df = pd.read_csv(src_csv, dtype=str)
+    other_cols  = [c for c in df.columns if c not in (BIZ_PHONE_COL, BIZ_EMAIL_COL)]
+    output_cols = ["Campaign Name", "Phone Number", "Email"] + other_cols
+    total = 0
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=output_cols)
+        writer.writeheader()
+        for _, row in df.iterrows():
+            email_val = clean_email(get_val(row, BIZ_EMAIL_COL))
+            if not email_val:
+                continue
+            phone_val = clean_phone(get_val(row, BIZ_PHONE_COL))
+            new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val, "Email": email_val}
+            for col in other_cols:
+                new_row[col] = get_val(row, col)
+            writer.writerow(new_row)
+            total += 1
+    del df
+    return total
+
+# ── SPLIT (shared by Sales/MLS and Business Leads) ──────────────────────────
+def split_csv(tmp_path, channel, month, year, state, deal, n_splits, mls=False, mls_type=None):
+    df = pd.read_csv(tmp_path, dtype=str)
+    total      = len(df)
+    chunk_size = math.ceil(total / n_splits)
+    parts      = []
+    for i in range(n_splits):
+        chunk = df.iloc[i * chunk_size:(i + 1) * chunk_size].copy()
+        if chunk.empty:
+            continue
+        wk_name = make_campaign(channel, month, year, state, deal, mls=mls, mls_type=mls_type, wk=i+1)
+        chunk["Campaign Name"] = wk_name
+        buf = io.StringIO()
+        chunk.to_csv(buf, index=False)
+        parts.append((wk_name, buf.getvalue().encode("utf-8")))
+    del df
+    return parts
+
+# ── WORD REPORT ──────────────────────────────────────────────────────────────
+def generate_report(month, year, state, deal,
+                    sales_results, mls_results,
+                    orig_phone_count, orig_email_count,
+                    n_splits, do_split,
+                    section_title="── SALES PROCESS ──"):
+    doc = Document()
+
+    def add_heading(text, level=1):
+        p   = doc.add_paragraph()
+        run = p.add_run(text)
+        run.bold           = True
+        run.font.size      = Pt(14 if level == 1 else 12)
+        run.font.color.rgb = RGBColor(0x1F, 0x49, 0x7D)
+        return p
+
+    def add_bullet(label, value):
+        p         = doc.add_paragraph(style="List Bullet")
+        run_label = p.add_run(f"{label}: ")
+        run_label.bold = True
+        p.add_run(str(value))
+
+    def add_numbered_list(items):
+        for item in items:
+            p = doc.add_paragraph(style="List Number")
+            p.add_run(item)
+
+    LABELS = {"dialer": "COLD CALL", "sms": "SMS", "email": "EMAIL"}
+    PHONE_LABEL = {"dialer": "Mobile and Land Lines", "sms": "Mobile Lines", "email": None}
+
+    def add_section(title, results, orig_phones, orig_emails):
+        add_heading(title, level=1)
+        for key, info in results.items():
+            channel_key = info["channel_key"]
+            wk_ranges = calc_week_ranges(info["rows"], n_splits) if do_split and n_splits > 1 else []
+            doc.add_paragraph()
+            add_heading(f"{LABELS[channel_key]} Campaign Summary", level=2)
+            add_bullet("Campaign Name", info["campaign"])
+            if channel_key in ("dialer", "sms"):
+                add_bullet(f"Total Original Count of {PHONE_LABEL[channel_key]}", f"{orig_phones:,}")
+                add_bullet(f"Total Cleaned Count of {PHONE_LABEL[channel_key]}", f"{info['rows']:,}")
+            else:
+                add_bullet("Total Original Count of Emails", f"{orig_emails:,}")
+                add_bullet("Total Cleaned Count of Emails", f"{info['rows']:,}")
+            add_bullet("Week Range", " | ".join(wk_ranges) if wk_ranges else "N/A")
+            add_bullet("List Type", deal)
+            add_bullet("Round Progress", "[To be updated]")
+            if info.get("splits"):
+                p   = doc.add_paragraph()
+                r   = p.add_run("WEEKLY SPLIT:")
+                r.bold = True
+                add_numbered_list([wk_name for wk_name, _ in info["splits"]])
+
+    month_full = MONTH_FULL.get(month, month)
+    p   = doc.add_paragraph()
+    r   = p.add_run(f"Subject: Upcoming Campaign-Ready Cleaned List for {month_full} - {year}")
+    r.bold          = True
+    r.font.size     = Pt(13)
+    doc.add_paragraph()
+    doc.add_paragraph("Hi Team,")
+    doc.add_paragraph(
+        f"The contact list for {month_full} - {year} has been cleaned and validated. "
+        "It is now organized and ready for use across the following marketing channels:"
+    )
+    add_heading("Details:", level=2)
+    add_bullet("State(s)", state)
+    add_bullet("Cities", "[To be updated]")
+    add_bullet("Month", month_full)
+    add_bullet("Year", year)
+    add_bullet("Niche(s)", deal)
+
+    if sales_results:
+        doc.add_paragraph()
+        add_section(section_title, sales_results,
+                    orig_phone_count, orig_email_count)
+
+    # MLS results are split into Seller / Agent groups for the report
+    seller_results = {k: v for k, v in mls_results.items() if v.get("mls_type") == "SELLER"}
+    agent_results  = {k: v for k, v in mls_results.items() if v.get("mls_type") == "AGENT"}
+
+    if seller_results:
+        doc.add_paragraph()
+        add_section("── MLS SELLER LIST ──", seller_results,
+                    orig_phone_count, orig_email_count)
+
+    if agent_results:
+        doc.add_paragraph()
+        add_section("── MLS AGENT LIST ──", agent_results,
+                    orig_phone_count, orig_email_count)
+
+    doc.add_paragraph()
+    doc.add_paragraph(
+        "Please review the attached list and let me know if you have any questions or need any additional updates."
+    )
+
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for folder, parts in channel_parts.items():
-            for name, data in parts:
-                zf.writestr(f"{folder}/{name}.csv", data)
+    doc.save(buf)
     buf.seek(0)
     return buf.getvalue()
 
-# ── RUN CHANNEL PROCESSING ───────────────────────────────────────────────────
-def run_channels(src_path, tail, tag, do_dialer, do_sms, do_email, do_split, n_splits):
-    channel_parts = {}
-    counts = {}
-    if do_dialer:
-        campaign = build_campaign("CC", tail, tag=tag)
-        rows, data = process_dialer_csv(src_path, campaign)
-        counts["dialer"] = rows
-        parts = split_csv_bytes(data, lambda wk: build_campaign("CC", tail, tag=tag, wk=wk), n_splits, do_split)
-        channel_parts["CC"] = parts
-    if do_sms:
-        campaign = build_campaign("SMS", tail, tag=tag)
-        rows, data = process_sms_csv(src_path, campaign)
-        counts["sms"] = rows
-        parts = split_csv_bytes(data, lambda wk: build_campaign("SMS", tail, tag=tag, wk=wk), n_splits, do_split)
-        channel_parts["SMS"] = parts
-    if do_email:
-        campaign = build_campaign("EMAIL", tail, tag=tag)
-        rows, data = process_email_csv(src_path, campaign)
-        counts["email"] = rows
-        parts = split_csv_bytes(data, lambda wk: build_campaign("EMAIL", tail, tag=tag, wk=wk), n_splits, do_split)
-        channel_parts["EMAIL"] = parts
-    return channel_parts, counts
+# ══════════════════════════════════════════════════════════════════════════
+# PAGE: LIST CLEANER (Sales & MLS)
+# ══════════════════════════════════════════════════════════════════════════
+def page_sales_mls():
+    st.title("📋 List Cleaner (Sales & MLS)")
+    st.divider()
 
-# ── RUN CHANNEL PROCESSING (Business Leads: single Phone/Email columns) ─────
-def run_channels_biz(src_path, tail, tag, do_dialer, do_sms, do_email, do_split, n_splits):
-    channel_parts = {}
-    counts = {}
-    if do_dialer:
-        campaign = build_campaign("CC", tail, tag=tag)
-        rows, data = process_biz_dialer_csv(src_path, campaign)
-        counts["dialer"] = rows
-        parts = split_csv_bytes(data, lambda wk: build_campaign("CC", tail, tag=tag, wk=wk), n_splits, do_split)
-        channel_parts["CC"] = parts
-    if do_sms:
-        campaign = build_campaign("SMS", tail, tag=tag)
-        rows, data = process_biz_sms_csv(src_path, campaign)
-        counts["sms"] = rows
-        parts = split_csv_bytes(data, lambda wk: build_campaign("SMS", tail, tag=tag, wk=wk), n_splits, do_split)
-        channel_parts["SMS"] = parts
-    if do_email:
-        campaign = build_campaign("EMAIL", tail, tag=tag)
-        rows, data = process_biz_email_csv(src_path, campaign)
-        counts["email"] = rows
-        parts = split_csv_bytes(data, lambda wk: build_campaign("EMAIL", tail, tag=tag, wk=wk), n_splits, do_split)
-        channel_parts["EMAIL"] = parts
-    return channel_parts, counts
-
-# ── UI HELPERS ───────────────────────────────────────────────────────────────
-def step_header(num, icon, title, optional=False):
-    col1, col2 = st.columns([5, 1])
-    with col1:
-        st.markdown(f"##### {icon}&nbsp;&nbsp;**Step {num} — {title}**")
-    with col2:
-        if optional:
-            st.badge("Optional", color="orange")
-    st.markdown("---")
-
-def page_title(icon, title, subtitle):
-    with st.container(border=True):
-        col1, col2 = st.columns([1, 8])
-        with col1:
-            st.markdown(f"# {icon}")
-        with col2:
-            st.markdown(f"### {title}")
-            st.caption(subtitle)
-
-def campaign_details_block(key_prefix):
-    add_name = st.checkbox("Do you want to add Campaign Name?", key=f"{key_prefix}_toggle")
-    month = year = state = deal = output_name = None
-    if add_name:
-        col1, col2 = st.columns(2)
-        with col1:
-            month = st.selectbox("📅 Month", MONTHS, key=f"{key_prefix}_month")
-            state = st.text_input("🗺️ State", placeholder="e.g. FL", key=f"{key_prefix}_state")
-        with col2:
-            year = st.text_input("📆 Year", value="2026", key=f"{key_prefix}_year")
-            deal = st.text_input("🏷️ Type of Deal", placeholder="e.g. LUXURY LAND", key=f"{key_prefix}_deal")
-    else:
-        output_name = st.text_input("Please enter the Output File Name", key=f"{key_prefix}_outname")
-    return add_name, month, year, state, deal, output_name
-
-def get_tail(add_name, month, year, state, deal, output_name):
-    if add_name:
-        return f"{month} - {year} - {state.strip().upper()} - {deal.strip()}"
-    return output_name.strip() if output_name else ""
-
-def marketing_process_block(key_prefix):
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        dialer = st.checkbox("📞 Dialer / AI Outbound", key=f"{key_prefix}_dialer")
-    with col2:
-        sms = st.checkbox("💬 SMS", key=f"{key_prefix}_sms")
-    with col3:
-        email = st.checkbox("📧 Email", key=f"{key_prefix}_email")
-    return dialer, sms, email
-
-# ── PAGE: PEOPLE LEADS ───────────────────────────────────────────────────────
-def page_people_leads():
-    page_title("👤", "People Leads", "Upload, clean, and organize your people lead campaigns")
-
-    step_header(1, "📁", "Upload Lead List")
-    files = st.file_uploader("Upload one or more Excel or CSV files (.xlsx, .csv)",
-                              type=["xlsx","csv"], accept_multiple_files=True, key="ppl_upload",
-                              label_visibility="collapsed")
-    if files:
-        st.success(f"✅ {len(files)} file(s) uploaded")
-
-    st.markdown("##### 📵&nbsp;&nbsp;**DNC Phone Numbers**")
-    dnc_choice = st.radio(
-        "Do you want DNC phone numbers included?",
-        ["No — remove Public DNC numbers", "Yes — keep all numbers"],
-        index=0, key="ppl_dnc", horizontal=True,
+    # STEP 1 — Upload
+    st.subheader("Step 1 — Upload Files")
+    uploaded_files = st.file_uploader(
+        "📁 Upload one or more Excel files (.xlsx)",
+        type=["xlsx"], accept_multiple_files=True, key="sm_upload"
     )
-    include_dnc = dnc_choice.startswith("Yes")
-    dnc_agreed = True  # default true for the "No" path
+    if uploaded_files:
+        st.success(f"✅ {len(uploaded_files)} file(s) uploaded")
+    st.divider()
 
-    if include_dnc:
-        st.warning(
-            "**⚠️ Please note:** DNC = Do-Not-Call / Do-Not-Disturb numbers.\n\n"
-            "You are **solely responsible** for any DNC numbers or anything else. "
-            "We will **not** be responsible for this. This task is entirely your responsibility."
-        )
-        dnc_agreed = st.checkbox(
-            "I agree to the Terms & Conditions and I have read all the terms and conditions.",
-            key="ppl_dnc_agree",
-        )
-    else:
-        st.caption("Public DNC numbers will be removed from all outputs (Dialer, SMS, Email, Properties).")
+    # STEP 2 — Campaign Details
+    st.subheader("Step 2 — Campaign Details")
+    col1, col2 = st.columns(2)
+    with col1:
+        month = st.selectbox("📅 Month", MONTHS, key="sm_month")
+        state = st.text_input("🗺️ State", placeholder="e.g. FL", key="sm_state")
+    with col2:
+        year  = st.text_input("📆 Year", value="2026", key="sm_year")
+        deal  = st.selectbox("🏷️ Type of Deal", DEAL_TYPES, key="sm_deal")
+    st.divider()
 
-    step_header(2, "🏷️", "Campaign Details")
-    add_name, month, year, state, deal, out_name = campaign_details_block("ppl")
+    # STEP 3 — Sales Process Options
+    st.subheader("Step 3 — Sales Process")
+    col_d, col_s, col_e = st.columns(3)
+    with col_d:
+        sales_dialer = st.checkbox("📞 Dialer", key="s_dialer")
+    with col_s:
+        sales_sms    = st.checkbox("💬 SMS", key="s_sms")
+    with col_e:
+        sales_email  = st.checkbox("📧 Email", key="s_email")
+    st.divider()
 
-    step_header(3, "📣", "Marketing Process")
-    dialer, sms, email = marketing_process_block("ppl_mkt")
+    # STEP 4 — MLS Seller List
+    st.subheader("Step 4 — MLS Seller List")
+    col_md, col_ms, col_me = st.columns(3)
+    with col_md:
+        mls_seller_dialer = st.checkbox("📞 Dialer", key="m_dialer")
+    with col_ms:
+        mls_seller_sms    = st.checkbox("💬 SMS", key="m_sms")
+    with col_me:
+        mls_seller_email  = st.checkbox("📧 Email", key="m_email")
+    st.divider()
 
-    step_header(4, "🏠", "Properties / Seller Leads", optional=True)
-    p_dialer, p_sms, p_email = marketing_process_block("ppl_prop")
+    # STEP 5 — MLS Agent List (optional)
+    st.subheader("Step 5 — MLS Agent List (optional)")
+    col_ad, col_as, col_ae = st.columns(3)
+    with col_ad:
+        mls_agent_dialer = st.checkbox("📞 Dialer", key="a_dialer")
+    with col_as:
+        mls_agent_sms    = st.checkbox("💬 SMS", key="a_sms")
+    with col_ae:
+        mls_agent_email  = st.checkbox("📧 Email", key="a_email")
+    st.divider()
 
-    step_header(5, "🔀", "Monthly Split", optional=True)
-    do_split = st.checkbox("🔀 Split output into multiple files", key="ppl_dosplit")
+    # STEP 6 — Split
+    st.subheader("Step 6 — Split (Optional)")
+    do_split = st.checkbox("🔀 Split output into multiple files", key="sm_dosplit")
     n_splits = 1
     if do_split:
-        n_splits = st.number_input("How many files to split into?", min_value=2, max_value=50,
-                                   value=5, step=1, key="ppl_nsplits")
+        n_splits = st.number_input("How many files to split into?",
+                                   min_value=2, max_value=50, value=5, step=1, key="sm_nsplits")
+    st.divider()
 
-    mkt_selected  = dialer or sms or email
-    prop_selected = p_dialer or p_sms or p_email
+    # PROCESS
+    sales_selected      = sales_dialer or sales_sms or sales_email
+    mls_seller_selected = mls_seller_dialer or mls_seller_sms or mls_seller_email
+    mls_agent_selected  = mls_agent_dialer or mls_agent_sms or mls_agent_email
+    mls_selected        = mls_seller_selected or mls_agent_selected
+    ready = bool(uploaded_files and state.strip() and year.strip() and
+                 (sales_selected or mls_selected))
 
-    if add_name:
-        details_ok = bool(state and state.strip() and year and year.strip() and deal and deal.strip())
-    else:
-        details_ok = bool(out_name and out_name.strip())
+    if st.button("⚙️ Process Files", use_container_width=True, type="primary",
+                 disabled=not ready, key="sm_process_btn"):
+        st.session_state.processed      = False
+        st.session_state.sales_results  = {}
+        st.session_state.mls_results    = {}
 
-    ready = bool(files and details_ok and (mkt_selected or prop_selected) and dnc_agreed)
+        # Merge + split Sales/MLS
+        with st.spinner("Merging and splitting files... ⏳"):
+            try:
+                total, orig_phones, orig_emails = merge_and_split(uploaded_files)
+                st.session_state.total_merged     = total
+                st.session_state.orig_phone_count = orig_phones
+                st.session_state.orig_email_count = orig_emails
+            except Exception as e:
+                st.error(f"❌ Merge error: {e}")
+                st.stop()
 
-    if st.button("⚙️ Process Files", width='stretch', type="primary",
-                 disabled=not ready, key="ppl_process"):
-        try:
-            tail = get_tail(add_name, month, year, state, deal, out_name)
+        y = year.strip()
+        s = state.strip().upper()
 
-            with st.spinner("📥 Merging files... please wait"):
-                total_rows, orig_phones, orig_emails = merge_to_disk(files, TMP_MERGED, include_dnc=include_dnc)
-            st.info(f"📊 Merged {total_rows:,} rows from {len(files)} file(s)")
+        # ── SALES PROCESSING ─────────────────────────────────────────────────
+        SALES_MAP = {
+            "dialer": (sales_dialer, TMP_DIALER,     process_dialer_file, "CC"),
+            "sms":    (sales_sms,    TMP_SMS,         process_sms_file,    "SMS"),
+            "email":  (sales_email,  TMP_EMAIL,       process_email_file,  "EMAIL"),
+        }
+        for key, (selected, out_tmp, fn, ch) in SALES_MAP.items():
+            if not selected:
+                continue
+            campaign = make_campaign(ch, month, y, s, deal)
+            with st.spinner(f"Processing Sales {key.upper()}... ⏳"):
+                try:
+                    rows = fn(TMP_SALES, out_tmp, campaign)
+                    st.session_state.sales_results[key] = {
+                        "channel": ch, "channel_key": key, "campaign": campaign,
+                        "rows": rows, "tmp": out_tmp, "splits": None,
+                    }
+                except Exception as e:
+                    st.error(f"❌ Sales {key} error: {e}")
 
-            mkt_parts  = {}
-            mkt_counts = {}
-            if mkt_selected:
-                with st.spinner("⚙️ Processing Marketing channels..."):
-                    mkt_parts, mkt_counts = run_channels(
-                        TMP_MERGED, tail, None, dialer, sms, email, do_split, int(n_splits))
+        # ── MLS SELLER LIST PROCESSING ───────────────────────────────────────
+        MLS_SELLER_MAP = {
+            "dialer": (mls_seller_dialer, TMP_MLS_DIALER,  process_dialer_file, "CC"),
+            "sms":    (mls_seller_sms,    TMP_MLS_SMS,      process_sms_file,    "SMS"),
+            "email":  (mls_seller_email,  TMP_MLS_EMAIL,    process_email_file,  "EMAIL"),
+        }
+        for key, (selected, out_tmp, fn, ch) in MLS_SELLER_MAP.items():
+            if not selected:
+                continue
+            campaign = make_campaign(ch, month, y, s, deal, mls=True, mls_type="SELLER")
+            with st.spinner(f"Processing MLS Seller {key.upper()}... ⏳"):
+                try:
+                    rows = fn(TMP_MLS, out_tmp, campaign)
+                    st.session_state.mls_results[f"seller_{key}"] = {
+                        "channel": ch, "channel_key": key, "campaign": campaign,
+                        "rows": rows, "tmp": out_tmp, "splits": None, "mls_type": "SELLER",
+                    }
+                except Exception as e:
+                    st.error(f"❌ MLS Seller {key} error: {e}")
 
-            prop_parts  = {}
-            prop_counts = {}
-            if prop_selected:
-                with st.spinner("🏠 Filtering Properties / Seller Leads..."):
-                    filter_properties_to_disk(TMP_MERGED, TMP_PROPS)
-                with st.spinner("⚙️ Processing Properties channels..."):
-                    prop_parts, prop_counts = run_channels(
-                        TMP_PROPS, tail, "PROPERTIES", p_dialer, p_sms, p_email, do_split, int(n_splits))
+        # ── MLS AGENT LIST PROCESSING (optional) ─────────────────────────────
+        MLS_AGENT_MAP = {
+            "dialer": (mls_agent_dialer, TMP_MLS_AGENT_DIALER, process_dialer_file, "CC"),
+            "sms":    (mls_agent_sms,    TMP_MLS_AGENT_SMS,    process_sms_file,    "SMS"),
+            "email":  (mls_agent_email,  TMP_MLS_AGENT_EMAIL,  process_email_file,  "EMAIL"),
+        }
+        for key, (selected, out_tmp, fn, ch) in MLS_AGENT_MAP.items():
+            if not selected:
+                continue
+            campaign = make_campaign(ch, month, y, s, deal, mls=True, mls_type="AGENT")
+            with st.spinner(f"Processing MLS Agent {key.upper()}... ⏳"):
+                try:
+                    rows = fn(TMP_MLS, out_tmp, campaign)
+                    st.session_state.mls_results[f"agent_{key}"] = {
+                        "channel": ch, "channel_key": key, "campaign": campaign,
+                        "rows": rows, "tmp": out_tmp, "splits": None, "mls_type": "AGENT",
+                    }
+                except Exception as e:
+                    st.error(f"❌ MLS Agent {key} error: {e}")
 
-            st.session_state.ppl_mkt_zip      = build_zip(mkt_parts) if mkt_parts else None
-            st.session_state.ppl_mkt_name     = f"Marketing Process - {tail}.zip"
-            st.session_state.ppl_mkt_counts   = mkt_counts
-            st.session_state.ppl_prop_zip     = build_zip(prop_parts) if prop_parts else None
-            st.session_state.ppl_prop_name    = f"Properties Seller Leads - {tail}.zip"
-            st.session_state.ppl_prop_counts  = prop_counts
-            st.session_state.ppl_total        = total_rows
-            st.session_state.ppl_orig_phones  = orig_phones
-            st.session_state.ppl_orig_emails  = orig_emails
-            st.session_state.ppl_processed    = True
-            gc.collect()
+        # ── SPLITS ───────────────────────────────────────────────────────────
+        for key, info in st.session_state.sales_results.items():
+            if do_split and n_splits > 1:
+                info["splits"] = split_csv(info["tmp"], info["channel"],
+                                           month, y, s, deal, int(n_splits), mls=False)
 
-        except Exception as e:
-            st.error(f"❌ Error: {e}")
+        for key, info in st.session_state.mls_results.items():
+            if do_split and n_splits > 1:
+                info["splits"] = split_csv(info["tmp"], info["channel"],
+                                           month, y, s, deal, int(n_splits),
+                                           mls=True, mls_type=info["mls_type"])
 
-    if st.session_state.get("ppl_processed"):
-        st.success("✅ **Processing Complete!**")
-        st.info(f"📊 Total rows merged: **{st.session_state.ppl_total:,}**")
-        st.info(f"📞 Original phone numbers: **{st.session_state.ppl_orig_phones:,}**")
-        st.info(f"📧 Original emails: **{st.session_state.ppl_orig_emails:,}**")
+        # ── SALES ZIP ────────────────────────────────────────────────────────
+        if st.session_state.sales_results:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for key, info in st.session_state.sales_results.items():
+                    folder = info["channel"]
+                    if info["splits"]:
+                        for wk_name, csv_bytes in info["splits"]:
+                            zf.writestr(f"{folder}/{wk_name}.csv", csv_bytes)
+                    else:
+                        with open(info["tmp"], "rb") as f:
+                            zf.writestr(f"{folder}/{info['campaign']}.csv", f.read())
+            buf.seek(0)
+            st.session_state.sales_zip_buffer = buf.getvalue()
+            st.session_state.sales_zip_name   = f"Sales - {month} - {y} - {s} - {deal}.zip"
 
-        if st.session_state.get("ppl_mkt_counts"):
-            st.markdown("**📋 Marketing Process:**")
-            for k, v in st.session_state.ppl_mkt_counts.items():
-                st.success(f"{k.title()}: **{v:,}**")
-        if st.session_state.get("ppl_prop_counts"):
-            st.markdown("**🏠 Properties / Seller Leads:**")
-            for k, v in st.session_state.ppl_prop_counts.items():
-                st.success(f"{k.title()}: **{v:,}**")
+        # ── MLS SELLER ZIP ───────────────────────────────────────────────────
+        mls_seller_out = {k: v for k, v in st.session_state.mls_results.items() if v.get("mls_type") == "SELLER"}
+        if mls_seller_out:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for key, info in mls_seller_out.items():
+                    folder = info["channel"]
+                    if info["splits"]:
+                        for wk_name, csv_bytes in info["splits"]:
+                            zf.writestr(f"{folder}/{wk_name}.csv", csv_bytes)
+                    else:
+                        with open(info["tmp"], "rb") as f:
+                            zf.writestr(f"{folder}/{info['campaign']}.csv", f.read())
+            buf.seek(0)
+            st.session_state.mls_seller_zip_buffer = buf.getvalue()
+            st.session_state.mls_seller_zip_name   = f"MLS Seller - {month} - {y} - {s} - {deal}.zip"
 
-        step_header("⬇", "📦", "Downloads")
-        if st.session_state.get("ppl_mkt_zip"):
-            st.download_button("⬇️ Download Marketing Process (ZIP)",
-                               data=st.session_state.ppl_mkt_zip,
-                               file_name=st.session_state.ppl_mkt_name,
-                               mime="application/zip", width='stretch',
-                               type="primary", key="ppl_dl_mkt")
-        if st.session_state.get("ppl_prop_zip"):
-            st.download_button("⬇️ Download Properties / Seller Leads (ZIP)",
-                               data=st.session_state.ppl_prop_zip,
-                               file_name=st.session_state.ppl_prop_name,
-                               mime="application/zip", width='stretch',
-                               type="primary", key="ppl_dl_prop")
+        # ── MLS AGENT ZIP ────────────────────────────────────────────────────
+        mls_agent_out = {k: v for k, v in st.session_state.mls_results.items() if v.get("mls_type") == "AGENT"}
+        if mls_agent_out:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for key, info in mls_agent_out.items():
+                    folder = info["channel"]
+                    if info["splits"]:
+                        for wk_name, csv_bytes in info["splits"]:
+                            zf.writestr(f"{folder}/{wk_name}.csv", csv_bytes)
+                    else:
+                        with open(info["tmp"], "rb") as f:
+                            zf.writestr(f"{folder}/{info['campaign']}.csv", f.read())
+            buf.seek(0)
+            st.session_state.mls_agent_zip_buffer = buf.getvalue()
+            st.session_state.mls_agent_zip_name   = f"MLS Agent - {month} - {y} - {s} - {deal}.zip"
 
-    if not ready and files:
-        if add_name:
-            if not (state and state.strip()):
-                st.warning("⚠️ Please enter State.")
-            if not (year and year.strip()):
-                st.warning("⚠️ Please enter Year.")
-            if not (deal and deal.strip()):
-                st.warning("⚠️ Please enter Type of Deal.")
-        else:
-            if not (out_name and out_name.strip()):
-                st.warning("⚠️ Please enter the Output File Name.")
-        if not (mkt_selected or prop_selected):
+        # ── REPORT ───────────────────────────────────────────────────────────
+        with st.spinner("Generating report... ⏳"):
+            try:
+                st.session_state.report_buffer = generate_report(
+                    month, y, s, deal,
+                    st.session_state.sales_results,
+                    st.session_state.mls_results,
+                    st.session_state.orig_phone_count,
+                    st.session_state.orig_email_count,
+                    int(n_splits), do_split
+                )
+            except Exception as e:
+                st.error(f"❌ Report error: {e}")
+
+        st.session_state.processed = True
+
+    # ── RESULTS ──────────────────────────────────────────────────────────────
+    if st.session_state.processed:
+        st.divider()
+        st.subheader("✅ Processing Complete!")
+
+        st.info(f"📊 Total rows merged: **{st.session_state.total_merged:,}**")
+        st.info(f"📞 Original phone numbers: **{st.session_state.orig_phone_count:,}**")
+        st.info(f"📧 Original emails: **{st.session_state.orig_email_count:,}**")
+
+        ICONS  = {"dialer": "📞", "sms": "💬", "email": "📧"}
+        LABELS = {"dialer": "Dialer phones", "sms": "SMS phones", "email": "Emails"}
+
+        if st.session_state.sales_results:
+            st.markdown("**📋 Sales Process:**")
+            for key, info in st.session_state.sales_results.items():
+                ck = info["channel_key"]
+                st.success(f"{ICONS[ck]} {LABELS[ck]}: **{info['rows']:,}**")
+
+        mls_seller_out = {k: v for k, v in st.session_state.mls_results.items() if v.get("mls_type") == "SELLER"}
+        mls_agent_out  = {k: v for k, v in st.session_state.mls_results.items() if v.get("mls_type") == "AGENT"}
+
+        if mls_seller_out:
+            st.markdown("**🏷️ MLS Seller List:**")
+            for key, info in mls_seller_out.items():
+                ck = info["channel_key"]
+                st.success(f"{ICONS[ck]} {LABELS[ck]}: **{info['rows']:,}**")
+
+        if mls_agent_out:
+            st.markdown("**🧑‍💼 MLS Agent List:**")
+            for key, info in mls_agent_out.items():
+                ck = info["channel_key"]
+                st.success(f"{ICONS[ck]} {LABELS[ck]}: **{info['rows']:,}**")
+
+        st.divider()
+        st.subheader("⬇️ Downloads")
+
+        if st.session_state.sales_zip_buffer:
+            st.download_button(
+                label="⬇️ Download Sales Process (ZIP)",
+                data=st.session_state.sales_zip_buffer,
+                file_name=st.session_state.sales_zip_name,
+                mime="application/zip",
+                use_container_width=True,
+                type="primary",
+                key="dl_sales_zip"
+            )
+
+        if st.session_state.mls_seller_zip_buffer:
+            st.download_button(
+                label="⬇️ Download MLS Seller List (ZIP)",
+                data=st.session_state.mls_seller_zip_buffer,
+                file_name=st.session_state.mls_seller_zip_name,
+                mime="application/zip",
+                use_container_width=True,
+                type="primary",
+                key="dl_mls_seller_zip"
+            )
+
+        if st.session_state.mls_agent_zip_buffer:
+            st.download_button(
+                label="⬇️ Download MLS Agent List (ZIP)",
+                data=st.session_state.mls_agent_zip_buffer,
+                file_name=st.session_state.mls_agent_zip_name,
+                mime="application/zip",
+                use_container_width=True,
+                type="primary",
+                key="dl_mls_agent_zip"
+            )
+
+        if st.session_state.report_buffer:
+            st.download_button(
+                label="📄 Download Report (Word)",
+                data=st.session_state.report_buffer,
+                file_name=f"Report - {month} - {year} - {state.strip().upper()} - {deal}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+                key="dl_report"
+            )
+
+    if not ready and uploaded_files:
+        if not state.strip():
+            st.warning("⚠️ Please enter State.")
+        if not year.strip():
+            st.warning("⚠️ Please enter Year.")
+        if not (sales_selected or mls_selected):
             st.warning("⚠️ Please select at least one output type.")
-        if include_dnc and not dnc_agreed:
-            st.warning("⚠️ Please accept the DNC terms and conditions to include DNC numbers.")
 
-# ── PAGE: BUSINESS LEADS ─────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════
+# PAGE: BUSINESS LEADS
+# ══════════════════════════════════════════════════════════════════════════
 def page_business_leads():
-    page_title("🏢", "Business Leads", "Merge your business lead files and export in one click")
+    st.title("🏢 Business Leads")
+    st.divider()
 
-    step_header(1, "📁", "Upload Lead List")
-    files = st.file_uploader("Upload one or more Excel or CSV files (.xlsx, .csv)",
-                              type=["xlsx","csv"], accept_multiple_files=True, key="biz_upload",
-                              label_visibility="collapsed")
-    if files:
-        st.success(f"✅ {len(files)} file(s) uploaded")
+    # STEP 1 — Upload
+    st.subheader("Step 1 — Upload Files")
+    uploaded_files = st.file_uploader(
+        "📁 Upload one or more Excel or CSV files (.xlsx, .csv)",
+        type=["xlsx", "csv"], accept_multiple_files=True, key="biz_upload"
+    )
+    if uploaded_files:
+        st.success(f"✅ {len(uploaded_files)} file(s) uploaded")
+    st.divider()
 
-    step_header(2, "🏷️", "Campaign Name")
-    add_name, month, year, state, deal, out_name = campaign_details_block("biz")
+    # STEP 2 — Campaign Details
+    st.subheader("Step 2 — Campaign Details")
+    col1, col2 = st.columns(2)
+    with col1:
+        month = st.selectbox("📅 Month", MONTHS, key="biz_month")
+        state = st.text_input("🗺️ State", placeholder="e.g. FL", key="biz_state")
+    with col2:
+        year = st.text_input("📆 Year", value="2026", key="biz_year")
+        deal = st.text_input("🏷️ Niche / List Type", placeholder="e.g. HVAC CONTRACTORS", key="biz_deal")
+    st.divider()
 
-    step_header(3, "📣", "Marketing Process")
-    dialer, sms, email = marketing_process_block("biz_mkt")
+    # STEP 3 — Marketing Process
+    st.subheader("Step 3 — Marketing Process")
+    col_d, col_s, col_e = st.columns(3)
+    with col_d:
+        biz_dialer = st.checkbox("📞 Dialer", key="biz_dialer")
+    with col_s:
+        biz_sms    = st.checkbox("💬 SMS", key="biz_sms")
+    with col_e:
+        biz_email  = st.checkbox("📧 Email", key="biz_email")
+    st.divider()
 
-    step_header(4, "🔀", "Monthly Split", optional=True)
+    # STEP 4 — Split
+    st.subheader("Step 4 — Split (Optional)")
     do_split = st.checkbox("🔀 Split output into multiple files", key="biz_dosplit")
     n_splits = 1
     if do_split:
-        n_splits = st.number_input("How many files to split into?", min_value=2, max_value=50,
-                                   value=5, step=1, key="biz_nsplits")
+        n_splits = st.number_input("How many files to split into?",
+                                   min_value=2, max_value=50, value=5, step=1, key="biz_nsplits")
+    st.divider()
 
-    mkt_selected = dialer or sms or email
+    # PROCESS
+    biz_selected = biz_dialer or biz_sms or biz_email
+    ready = bool(uploaded_files and state.strip() and year.strip() and deal.strip() and biz_selected)
 
-    if add_name:
-        details_ok = bool(state and state.strip() and year and year.strip() and deal and deal.strip())
-    else:
-        details_ok = bool(out_name and out_name.strip())
+    if st.button("⚙️ Process Files", use_container_width=True, type="primary",
+                 disabled=not ready, key="biz_process_btn"):
+        st.session_state.biz_processed = False
+        st.session_state.biz_results   = {}
 
-    ready = bool(files and details_ok and mkt_selected)
+        with st.spinner("Merging files... ⏳"):
+            try:
+                total, orig_phones, orig_emails = merge_biz_to_disk(uploaded_files)
+                st.session_state.biz_total_merged     = total
+                st.session_state.biz_orig_phone_count = orig_phones
+                st.session_state.biz_orig_email_count = orig_emails
+            except Exception as e:
+                st.error(f"❌ Merge error: {e}")
+                st.stop()
 
-    if st.button("⚙️ Process Files", width='stretch', type="primary",
-                 disabled=not ready, key="biz_process"):
-        try:
-            tail = get_tail(add_name, month, year, state, deal, out_name)
+        y = year.strip()
+        s = state.strip().upper()
+        d = deal.strip()
 
-            with st.spinner("📥 Merging files..."):
-                total_rows = merge_biz_to_disk(files, TMP_BIZ_MERGED)
-            st.info(f"📊 Merged {total_rows:,} rows from {len(files)} file(s)")
+        # ── BUSINESS LEADS PROCESSING ────────────────────────────────────────
+        BIZ_MAP = {
+            "dialer": (biz_dialer, TMP_BIZ_DIALER, process_biz_dialer_file, "CC"),
+            "sms":    (biz_sms,    TMP_BIZ_SMS,     process_biz_sms_file,    "SMS"),
+            "email":  (biz_email,  TMP_BIZ_EMAIL,   process_biz_email_file,  "EMAIL"),
+        }
+        for key, (selected, out_tmp, fn, ch) in BIZ_MAP.items():
+            if not selected:
+                continue
+            campaign = make_campaign(ch, month, y, s, d)
+            with st.spinner(f"Processing Business {key.upper()}... ⏳"):
+                try:
+                    rows = fn(TMP_BIZ_MERGED, out_tmp, campaign)
+                    st.session_state.biz_results[key] = {
+                        "channel": ch, "channel_key": key, "campaign": campaign,
+                        "rows": rows, "tmp": out_tmp, "splits": None,
+                    }
+                except Exception as e:
+                    st.error(f"❌ Business {key} error: {e}")
 
-            with st.spinner("⚙️ Processing Marketing channels..."):
-                mkt_parts, mkt_counts = run_channels_biz(
-                    TMP_BIZ_MERGED, tail, None, dialer, sms, email, do_split, int(n_splits))
+        # ── SPLITS ───────────────────────────────────────────────────────────
+        for key, info in st.session_state.biz_results.items():
+            if do_split and n_splits > 1:
+                info["splits"] = split_csv(info["tmp"], info["channel"],
+                                           month, y, s, d, int(n_splits), mls=False)
 
-            st.session_state.biz_mkt_zip     = build_zip(mkt_parts) if mkt_parts else None
-            st.session_state.biz_mkt_name    = f"Business Leads - {tail}.zip"
-            st.session_state.biz_mkt_counts  = mkt_counts
-            st.session_state.biz_total       = total_rows
-            st.session_state.biz_processed   = True
-            gc.collect()
+        # ── ZIP ──────────────────────────────────────────────────────────────
+        if st.session_state.biz_results:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for key, info in st.session_state.biz_results.items():
+                    folder = info["channel"]
+                    if info["splits"]:
+                        for wk_name, csv_bytes in info["splits"]:
+                            zf.writestr(f"{folder}/{wk_name}.csv", csv_bytes)
+                    else:
+                        with open(info["tmp"], "rb") as f:
+                            zf.writestr(f"{folder}/{info['campaign']}.csv", f.read())
+            buf.seek(0)
+            st.session_state.biz_zip_buffer = buf.getvalue()
+            st.session_state.biz_zip_name   = f"Business Leads - {month} - {y} - {s} - {d}.zip"
 
-        except Exception as e:
-            st.error(f"❌ Error: {e}")
+        # ── REPORT ───────────────────────────────────────────────────────────
+        with st.spinner("Generating report... ⏳"):
+            try:
+                st.session_state.biz_report_buffer = generate_report(
+                    month, y, s, d,
+                    st.session_state.biz_results,
+                    {},  # no MLS section for Business Leads
+                    st.session_state.biz_orig_phone_count,
+                    st.session_state.biz_orig_email_count,
+                    int(n_splits), do_split,
+                    section_title="── BUSINESS LEADS ──"
+                )
+            except Exception as e:
+                st.error(f"❌ Report error: {e}")
 
-    if st.session_state.get("biz_processed"):
-        st.success("✅ **Processing Complete!**")
-        st.info(f"📊 Total rows merged: **{st.session_state.biz_total:,}**")
+        st.session_state.biz_processed = True
 
-        if st.session_state.get("biz_mkt_counts"):
-            st.markdown("**📋 Marketing Process:**")
-            for k, v in st.session_state.biz_mkt_counts.items():
-                st.success(f"{k.title()}: **{v:,}**")
+    # ── RESULTS ──────────────────────────────────────────────────────────────
+    if st.session_state.biz_processed:
+        st.divider()
+        st.subheader("✅ Processing Complete!")
 
-        step_header("⬇", "📦", "Downloads")
-        if st.session_state.get("biz_mkt_zip"):
-            st.download_button("⬇️ Download Business Leads (ZIP)",
-                               data=st.session_state.biz_mkt_zip,
-                               file_name=st.session_state.biz_mkt_name,
-                               mime="application/zip", width='stretch',
-                               type="primary", key="biz_dl")
+        st.info(f"📊 Total rows merged: **{st.session_state.biz_total_merged:,}**")
+        st.info(f"📞 Original phone numbers: **{st.session_state.biz_orig_phone_count:,}**")
+        st.info(f"📧 Original emails: **{st.session_state.biz_orig_email_count:,}**")
 
-    if not ready and files:
-        if add_name:
-            if not (state and state.strip()): st.warning("⚠️ Please enter State.")
-            if not (year and year.strip()):   st.warning("⚠️ Please enter Year.")
-            if not (deal and deal.strip()):   st.warning("⚠️ Please enter Type of Deal.")
-        else:
-            if not (out_name and out_name.strip()): st.warning("⚠️ Please enter Output File Name.")
-        if not mkt_selected:
+        ICONS  = {"dialer": "📞", "sms": "💬", "email": "📧"}
+        LABELS = {"dialer": "Dialer phones", "sms": "SMS phones", "email": "Emails"}
+
+        if st.session_state.biz_results:
+            st.markdown("**🏢 Business Leads:**")
+            for key, info in st.session_state.biz_results.items():
+                ck = info["channel_key"]
+                st.success(f"{ICONS[ck]} {LABELS[ck]}: **{info['rows']:,}**")
+
+        st.divider()
+        st.subheader("⬇️ Downloads")
+
+        if st.session_state.biz_zip_buffer:
+            st.download_button(
+                label="⬇️ Download Business Leads (ZIP)",
+                data=st.session_state.biz_zip_buffer,
+                file_name=st.session_state.biz_zip_name,
+                mime="application/zip",
+                use_container_width=True,
+                type="primary",
+                key="dl_biz_zip"
+            )
+
+        if st.session_state.biz_report_buffer:
+            st.download_button(
+                label="📄 Download Report (Word)",
+                data=st.session_state.biz_report_buffer,
+                file_name=f"Report - Business Leads - {month} - {year} - {state.strip().upper()} - {deal.strip()}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+                key="dl_biz_report"
+            )
+
+    if not ready and uploaded_files:
+        if not state.strip():
+            st.warning("⚠️ Please enter State.")
+        if not year.strip():
+            st.warning("⚠️ Please enter Year.")
+        if not deal.strip():
+            st.warning("⚠️ Please enter Niche / List Type.")
+        if not biz_selected:
             st.warning("⚠️ Please select at least one channel (Dialer / SMS / Email).")
 
-# ── REPORTING CONSTANTS ───────────────────────────────────────────────────────
-MAX_DIALS_PER_NUMBER    = 150
-DIALS_PER_CALLER        = 600
-MIN_CALLER_ID_POOL      = 10
-ROTATION_CALLING_DAYS   = 10
-DIALS_BEFORE_ROTATION   = 1500
-CALLING_DAYS_PER_MONTH  = 20
+# ══════════════════════════════════════════════════════════════════════════
+# APP ENTRY / NAVIGATION
+# ══════════════════════════════════════════════════════════════════════════
+st.set_page_config(page_title="List Cleaner", page_icon="📋", layout="centered")
 
-MAX_SMS_PER_NUMBER      = 500
-SMS_NUMBERS_PER_CAMPAIGN= 4
-MAX_SMS_PER_CAMPAIGN    = 2000
-SMS_ROTATION_DAYS       = 10
-SMS_BEFORE_ROTATION     = 5000
-
-MAX_INBOXES_PER_DOMAIN  = 5
-MAX_EMAILS_PER_INBOX    = 35
-DOMAIN_DAILY_CAPACITY   = 175
-EMAIL_WARMUP_DAYS       = 30
-EMAIL_ROTATION_DAYS     = 20
-EMAILS_BEFORE_ROTATION  = 700
-
-# ── ACCENT PALETTE (light theme, indigo-based) ────────────────────────────────
-CLR_INDIGO = "#3346D3"
-CLR_BLUE   = "#3B82F6"
-CLR_GREEN  = "#22A45D"
-CLR_PURPLE = "#8B5CF6"
-CLR_RED    = "#EF4444"
-CLR_AMBER  = "#F59E0B"
-CLR_INK    = "#1D2140"
-CLR_MUTE   = "#6B7290"
-CLR_GRID   = "#E7EAF3"
-
-def add_business_days(start_date, days):
-    current = start_date
-    added = 0
-    while added < days:
-        current += timedelta(days=1)
-        if current.weekday() < 5:
-            added += 1
-    return current
-
-def calculate_all(total_phones, total_sms, total_emails, callers, start_date=None):
-    r = {}
-    r["dials_per_day"]        = math.ceil(total_phones / CALLING_DAYS_PER_MONTH)
-    r["callers_needed"]       = math.ceil(r["dials_per_day"] / DIALS_PER_CALLER)
-    r["active_caller_ids"]    = max(MIN_CALLER_ID_POOL, math.ceil(r["dials_per_day"] / MAX_DIALS_PER_NUMBER))
-    r["rotation_cycles"]      = CALLING_DAYS_PER_MONTH // ROTATION_CALLING_DAYS
-    r["total_caller_ids"]     = r["active_caller_ids"] * r["rotation_cycles"]
-    r["dials_per_number"]     = math.ceil(r["dials_per_day"] / r["active_caller_ids"])
-    r["dials_check_ok"]       = r["dials_per_number"] <= MAX_DIALS_PER_NUMBER
-
-    r["callers_diff"]         = callers - r["callers_needed"]
-    r["staffing_ok"]          = callers >= r["callers_needed"]
-    r["team_capacity"]        = callers * DIALS_PER_CALLER * CALLING_DAYS_PER_MONTH
-    r["days_to_finish"]       = math.ceil(total_phones / (callers * DIALS_PER_CALLER)) if callers > 0 else 999
-
-    r["texts_per_day"]        = math.ceil(total_sms / CALLING_DAYS_PER_MONTH)
-    r["min_sms_numbers"]      = math.ceil(r["texts_per_day"] / MAX_SMS_PER_NUMBER)
-    r["campaigns_required"]   = math.ceil(r["texts_per_day"] / MAX_SMS_PER_CAMPAIGN)
-    r["active_sms_numbers"]   = max(r["min_sms_numbers"], r["campaigns_required"] * SMS_NUMBERS_PER_CAMPAIGN)
-    r["total_sms_numbers"]    = r["active_sms_numbers"] * r["rotation_cycles"]
-    r["texts_per_number"]     = math.ceil(r["texts_per_day"] / r["active_sms_numbers"]) if r["active_sms_numbers"] > 0 else 0
-    r["sms_check_ok"]         = r["texts_per_number"] <= MAX_SMS_PER_NUMBER
-
-    r["emails_per_day"]       = math.ceil(total_emails / CALLING_DAYS_PER_MONTH)
-    r["inboxes_needed"]       = math.ceil(r["emails_per_day"] / MAX_EMAILS_PER_INBOX)
-    r["domains_needed"]       = math.ceil(r["inboxes_needed"] / MAX_INBOXES_PER_DOMAIN)
-    r["domain_capacity"]      = r["domains_needed"] * DOMAIN_DAILY_CAPACITY
-    r["emails_per_inbox"]     = math.ceil(r["emails_per_day"] / r["inboxes_needed"]) if r["inboxes_needed"] > 0 else 0
-    r["email_check_ok"]       = r["emails_per_inbox"] <= MAX_EMAILS_PER_INBOX
-
-    if start_date:
-        r["campaign_end"]       = add_business_days(start_date, CALLING_DAYS_PER_MONTH)
-        r["rotate_out_1"]       = add_business_days(start_date, ROTATION_CALLING_DAYS)
-        r["rotate_out_2"]       = add_business_days(start_date, ROTATION_CALLING_DAYS * 2)
-        r["warmup_start"]       = start_date - timedelta(days=EMAIL_WARMUP_DAYS)
-        r["email_rotate"]       = add_business_days(start_date, EMAIL_ROTATION_DAYS)
-    else:
-        for k in ("campaign_end","rotate_out_1","rotate_out_2","warmup_start","email_rotate"):
-            r[k] = None
-    return r
-
-# ── PLOTLY CHART BUILDERS ─────────────────────────────────────────────────────
-def _base_layout(fig, height=260):
-    fig.update_layout(
-        height=height,
-        margin=dict(l=10, r=10, t=30, b=10),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Inter, Segoe UI, sans-serif", color=CLR_INK, size=13),
-        showlegend=False,
-    )
-    return fig
-
-def gauge_chart(value, limit, title, unit=""):
-    import plotly.graph_objects as go
-    ok = value <= limit
-    bar_color = CLR_GREEN if ok else CLR_RED
-    axis_max = max(limit * 1.4, value * 1.15, 1)
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=value,
-        number={"suffix": unit, "font": {"size": 30, "color": CLR_INK}},
-        title={"text": title, "font": {"size": 14, "color": CLR_MUTE}},
-        gauge={
-            "axis": {"range": [0, axis_max], "tickcolor": CLR_MUTE, "tickfont": {"size": 10}},
-            "bar": {"color": bar_color, "thickness": 0.7},
-            "bgcolor": "#F4F6FB",
-            "borderwidth": 0,
-            "steps": [
-                {"range": [0, limit], "color": "#E8F5EC"},
-                {"range": [limit, axis_max], "color": "#FCE9E9"},
-            ],
-            "threshold": {"line": {"color": CLR_INK, "width": 3}, "thickness": 0.8, "value": limit},
-        },
-    ))
-    return _base_layout(fig, height=240)
-
-def bar_breakdown(labels, values, colors, title):
-    import plotly.graph_objects as go
-    fig = go.Figure(go.Bar(
-        x=labels, y=values,
-        marker=dict(color=colors, line=dict(width=0)),
-        text=[f"{v:,}" for v in values],
-        textposition="outside",
-        textfont=dict(size=12, color=CLR_INK),
-    ))
-    fig.update_yaxes(showgrid=True, gridcolor=CLR_GRID, zeroline=False)
-    fig.update_xaxes(showgrid=False)
-    fig.update_layout(title=dict(text=title, font=dict(size=14, color=CLR_MUTE)))
-    return _base_layout(fig, height=300)
-
-def timeline_chart(events):
-    """events: list of dicts {task, start, end, color}"""
-    import plotly.graph_objects as go
-    fig = go.Figure()
-    for i, ev in enumerate(events):
-        fig.add_trace(go.Bar(
-            base=[ev["start"]],
-            x=[(ev["end"] - ev["start"]).days],
-            y=[ev["task"]],
-            orientation="h",
-            marker=dict(color=ev["color"]),
-            hovertemplate=f"{ev['task']}<br>{ev['start'].strftime('%b %d')} → {ev['end'].strftime('%b %d')}<extra></extra>",
-            width=0.55,
-        ))
-    fig.update_xaxes(type="date", showgrid=True, gridcolor=CLR_GRID)
-    fig.update_yaxes(showgrid=False, autorange="reversed")
-    fig.update_layout(barmode="stack")
-    return _base_layout(fig, height=260)
-
-# ── LIGHT KPI CARD (native, no dark HTML) ─────────────────────────────────────
-def kpi_card(col, label, value, desc, status=None):
-    """status: None | 'ok' | 'bad' -> tints the value color."""
-    color = CLR_INK
-    if status == "ok":
-        color = CLR_GREEN
-    elif status == "bad":
-        color = CLR_RED
-    with col:
-        st.markdown(
-            f"""<div style="background:#FFFFFF;border:1px solid {CLR_GRID};border-radius:14px;
-                        padding:16px 18px;margin-bottom:12px;box-shadow:0 1px 3px rgba(20,25,45,0.04);">
-                    <div style="font-size:0.72rem;font-weight:600;color:{CLR_MUTE};
-                                text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">{label}</div>
-                    <div style="font-size:1.9rem;font-weight:800;color:{color};line-height:1;">{value}</div>
-                    <div style="font-size:0.72rem;color:#9AA0B4;margin-top:5px;">{desc}</div>
-                </div>""",
-            unsafe_allow_html=True,
-        )
-
-def channel_banner(icon, title, subtitle, accent):
-    st.markdown(
-        f"""<div style="display:flex;align-items:center;gap:12px;background:#FFFFFF;
-                    border:1px solid {CLR_GRID};border-left:5px solid {accent};
-                    border-radius:12px;padding:14px 18px;margin:8px 0 16px 0;">
-                <span style="font-size:1.7rem;">{icon}</span>
-                <div>
-                    <div style="font-size:1.05rem;font-weight:800;color:{CLR_INK};">{title}</div>
-                    <div style="font-size:0.75rem;color:{CLR_MUTE};">{subtitle}</div>
-                </div>
-            </div>""",
-        unsafe_allow_html=True,
-    )
-
-# ── REPORTING PAGE ────────────────────────────────────────────────────────────
-def render_reporting(auto_phones=0, auto_sms=0, auto_emails=0):
-    page_title("📊", "Marketing Guardrails", "Monthly campaign capacity & compliance dashboard")
-
-    st.markdown("##### 🎯&nbsp;&nbsp;**Campaign Inputs**")
-    with st.container(border=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            total_phones = st.number_input("📞 Total Phone Numbers", min_value=0,
-                value=int(auto_phones) if auto_phones else 0, step=1000, format="%d", key="rpt_phones")
-        with c2:
-            total_sms = st.number_input("💬 Total SMS Numbers (Mobile)", min_value=0,
-                value=int(auto_sms) if auto_sms else 0, step=1000, format="%d", key="rpt_sms")
-        with c3:
-            total_emails = st.number_input("📧 Total Email Addresses", min_value=0,
-                value=int(auto_emails) if auto_emails else 0, step=1000, format="%d", key="rpt_emails")
-        c4, c5 = st.columns(2)
-        with c4:
-            callers = st.number_input("👥 Callers on Team", min_value=0, value=2, step=1, format="%d", key="rpt_callers")
-        with c5:
-            use_dates = st.checkbox("📅 Add Campaign Dates (Optional)", key="rpt_use_dates")
-        start_date = None
-        if use_dates:
-            start_date = st.date_input("Campaign Start Date", value=date.today(), key="rpt_start")
-
-    if total_phones == 0 and total_sms == 0 and total_emails == 0:
-        st.info("👆 Enter your numbers above to generate the report. Process your files first and the counts auto-populate here.")
-        return
-
-    r = calculate_all(total_phones, total_sms, total_emails, callers, start_date)
-
-    # ── OVERALL COMPLIANCE STATUS ─────────────────────────────────────────────
-    checks = [("Cold Calling", r["dials_check_ok"]), ("SMS", r["sms_check_ok"]),
-              ("Email", r["email_check_ok"]), ("Staffing", r["staffing_ok"])]
-    passed = sum(1 for _, ok in checks if ok)
-    st.markdown("")
-    if passed == len(checks):
-        st.success(f"✅ **All {len(checks)} guardrails within limits** — campaign is safe to launch.")
-    else:
-        failed = [name for name, ok in checks if not ok]
-        st.warning(f"⚠️ **{passed}/{len(checks)} guardrails OK** — needs attention: {', '.join(failed)}")
-
-    st.divider()
-
-    # ══ COLD CALLING ══════════════════════════════════════════════════════════
-    channel_banner("📞", "Cold Calling", "Landline + Mobile · all phone numbers", CLR_BLUE)
-    k = st.columns(4)
-    kpi_card(k[0], "Dials / Day", f"{r['dials_per_day']:,}", "Total ÷ 20 days")
-    kpi_card(k[1], "Callers Needed", f"{r['callers_needed']:,}", "Dials ÷ 600/caller")
-    kpi_card(k[2], "Active Caller IDs", f"{r['active_caller_ids']:,}", "Per rotation cycle")
-    kpi_card(k[3], "Total Caller IDs", f"{r['total_caller_ids']:,}", f"Active × {r['rotation_cycles']} cycles")
-
-    g1, g2 = st.columns([1, 1])
-    with g1:
-        st.plotly_chart(gauge_chart(r["dials_per_number"], MAX_DIALS_PER_NUMBER,
-                        "Dials / Number / Day", ""), width='stretch',
-                        config={"displayModeBar": False}, key="g_cc")
-        st.caption(f"Limit: {MAX_DIALS_PER_NUMBER}/number/day · "
-                   + ("✅ within limit" if r['dials_check_ok'] else "⛔ over limit"))
-    with g2:
-        st.plotly_chart(bar_breakdown(
-            ["Dials/Day", "Team Cap/Day", "Per Caller"],
-            [r["dials_per_day"], callers * DIALS_PER_CALLER, DIALS_PER_CALLER],
-            [CLR_BLUE, CLR_INDIGO, "#9AA0E8"],
-            "Daily Calling Capacity"), width='stretch',
-            config={"displayModeBar": False}, key="b_cc")
-
-    st.divider()
-
-    # ══ STAFFING ══════════════════════════════════════════════════════════════
-    st.markdown("##### 👥&nbsp;&nbsp;**Staffing Analysis**")
-    if r["staffing_ok"]:
-        st.success(f"✅ **Sufficient** — {callers} callers, {r['callers_diff']} surplus over the "
-                   f"{r['callers_needed']} needed. List finishes in ~{r['days_to_finish']} days.")
-    else:
-        st.error(f"⚠️ **Shortfall** — {callers} callers but need {r['callers_needed']}. "
-                 f"Hire {abs(r['callers_diff'])} more to finish in 20 days "
-                 f"(currently ~{r['days_to_finish']} days).")
-    sc = st.columns(3)
-    kpi_card(sc[0], "Callers Needed", f"{r['callers_needed']:,}", "To finish in 20 days")
-    kpi_card(sc[1], "Team Capacity (20d)", f"{r['team_capacity']:,}", f"{callers} × 600 × 20")
-    kpi_card(sc[2], "Days to Finish", f"{r['days_to_finish']}", "Target: ≤ 20",
-             status="ok" if r["days_to_finish"] <= 20 else "bad")
-
-    st.divider()
-
-    # ══ SMS ═══════════════════════════════════════════════════════════════════
-    channel_banner("💬", "SMS", "Mobile numbers only · A2P 10DLC", CLR_GREEN)
-    sk = st.columns(4)
-    kpi_card(sk[0], "Texts / Day", f"{r['texts_per_day']:,}", "SMS ÷ 20 days")
-    kpi_card(sk[1], "Campaigns Required", f"{r['campaigns_required']:,}", "÷ 2,000/campaign/day")
-    kpi_card(sk[2], "Active SMS Numbers", f"{r['active_sms_numbers']:,}", f"{SMS_NUMBERS_PER_CAMPAIGN}/campaign")
-    kpi_card(sk[3], "Total SMS Numbers", f"{r['total_sms_numbers']:,}", f"Active × {r['rotation_cycles']} cycles")
-
-    sg1, sg2 = st.columns([1, 1])
-    with sg1:
-        st.plotly_chart(gauge_chart(r["texts_per_number"], MAX_SMS_PER_NUMBER,
-                        "Texts / Number / Day", ""), width='stretch',
-                        config={"displayModeBar": False}, key="g_sms")
-        st.caption(f"Limit: {MAX_SMS_PER_NUMBER}/number/day · "
-                   + ("✅ within limit" if r['sms_check_ok'] else "⛔ over limit"))
-    with sg2:
-        st.plotly_chart(bar_breakdown(
-            ["Texts/Day", "Min Numbers", "Active Numbers"],
-            [r["texts_per_day"], r["min_sms_numbers"], r["active_sms_numbers"]],
-            [CLR_GREEN, "#7DD3A8", CLR_INDIGO],
-            "SMS Volume & Numbers"), width='stretch',
-            config={"displayModeBar": False}, key="b_sms")
-
-    st.divider()
-
-    # ══ EMAIL ═════════════════════════════════════════════════════════════════
-    channel_banner("📧", "Email", "Verified emails only · CAN-SPAM compliant", CLR_PURPLE)
-    ek = st.columns(4)
-    kpi_card(ek[0], "Emails / Day", f"{r['emails_per_day']:,}", "Total ÷ 20 days")
-    kpi_card(ek[1], "Inboxes Needed", f"{r['inboxes_needed']:,}", "÷ 35/inbox/day")
-    kpi_card(ek[2], "Domains Needed", f"{r['domains_needed']:,}", "÷ 5 inboxes/domain")
-    kpi_card(ek[3], "Domain Daily Cap", f"{r['domain_capacity']:,}", "Domains × 175/day")
-
-    eg1, eg2 = st.columns([1, 1])
-    with eg1:
-        st.plotly_chart(gauge_chart(r["emails_per_inbox"], MAX_EMAILS_PER_INBOX,
-                        "Emails / Inbox / Day", ""), width='stretch',
-                        config={"displayModeBar": False}, key="g_email")
-        st.caption(f"Limit: {MAX_EMAILS_PER_INBOX}/inbox/day · "
-                   + ("✅ within limit" if r['email_check_ok'] else "⛔ over limit"))
-    with eg2:
-        st.plotly_chart(bar_breakdown(
-            ["Inboxes", "Domains", "Cap ÷ 100"],
-            [r["inboxes_needed"], r["domains_needed"], max(1, r["domain_capacity"] // 100)],
-            [CLR_PURPLE, "#B79AF3", CLR_INDIGO],
-            "Email Infrastructure"), width='stretch',
-            config={"displayModeBar": False}, key="b_email")
-
-    # ══ ROTATION TIMELINE ═════════════════════════════════════════════════════
-    if start_date and r.get("rotate_out_1"):
-        st.divider()
-        st.markdown("##### 🗓️&nbsp;&nbsp;**Rotation Schedule**")
-        events = [
-            {"task": "📞 Caller IDs", "start": start_date, "end": r["rotate_out_1"], "color": CLR_BLUE},
-            {"task": "📞 Caller IDs (cyc 2)", "start": r["rotate_out_1"], "end": r["rotate_out_2"], "color": "#9AB6F5"},
-            {"task": "💬 SMS Numbers", "start": start_date, "end": r["rotate_out_1"], "color": CLR_GREEN},
-            {"task": "💬 SMS Numbers (cyc 2)", "start": r["rotate_out_1"], "end": r["rotate_out_2"], "color": "#7DD3A8"},
-            {"task": "📧 Email Inboxes", "start": start_date, "end": r["email_rotate"], "color": CLR_PURPLE},
-        ]
-        if r.get("warmup_start"):
-            events.insert(0, {"task": "📧 Email Warmup", "start": r["warmup_start"], "end": start_date, "color": CLR_AMBER})
-        st.plotly_chart(timeline_chart(events), width='stretch',
-                        config={"displayModeBar": False}, key="tl_rot")
-        tcols = st.columns(3)
-        kpi_card(tcols[0], "Campaign End", r["campaign_end"].strftime("%b %d, %Y"), "20 business days")
-        kpi_card(tcols[1], "Warmup Start", r["warmup_start"].strftime("%b %d, %Y"), "Start − 30 days")
-        kpi_card(tcols[2], "Email Rotation", r["email_rotate"].strftime("%b %d, %Y"), "After 20 sending days")
-
-def page_reports():
-    auto_phones = st.session_state.get("ppl_orig_phones", 0)
-    auto_emails = st.session_state.get("ppl_orig_emails", 0)
-    mkt_counts  = st.session_state.get("ppl_mkt_counts", {})
-    auto_sms    = mkt_counts.get("sms", auto_phones)
-    if mkt_counts.get("dialer"):
-        auto_phones = mkt_counts["dialer"]
-    if mkt_counts.get("email"):
-        auto_emails = mkt_counts["email"]
-    render_reporting(auto_phones=auto_phones, auto_sms=auto_sms, auto_emails=auto_emails)
-
-# ── APP ──────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Campaign Organizer", page_icon="📋", layout="centered")
-
-CUSTOM_CSS = """
-<style>
-#MainMenu, footer, header {visibility: hidden;}
-html, body, [class*="css"] { font-family: 'Segoe UI', 'Inter', sans-serif; }
-.stApp { background: #F4F6FB; }
-[data-testid="stSidebarCollapseButton"] { display: none !important; }
-section[data-testid="stSidebar"] .stButton>button {
-    width: 100%; text-align: left; justify-content: flex-start;
-    background: transparent !important; color: #4B5170 !important;
-    border: 1px solid transparent !important; border-radius: 10px !important;
-    font-weight: 600 !important; padding: 10px 14px !important;
-    box-shadow: none !important; margin-bottom: 4px;
-}
-section[data-testid="stSidebar"] .stButton>button:hover {
-    background: #F1F3FC !important; color: #3346D3 !important;
-}
-section[data-testid="stSidebar"] .stButton>button[kind="primary"] {
-    background: #3346D3 !important; color: #FFFFFF !important;
-    box-shadow: 0 4px 10px rgba(51,70,211,0.28) !important;
-}
-div[data-testid="stMain"] .stButton>button {
-    border-radius: 10px !important; font-weight: 600 !important;
-    padding: 10px 18px !important; border: 1px solid #D8DCEC !important;
-}
-div[data-testid="stMain"] .stButton>button[kind="primary"] {
-    background: #3346D3 !important; color: #fff !important; border: none !important;
-    box-shadow: 0 4px 10px rgba(51,70,211,0.25) !important;
-}
-.stDownloadButton>button {
-    border-radius: 10px !important; font-weight: 600 !important;
-    background: #1F9D55 !important; color: #fff !important; border: none !important;
-    box-shadow: 0 4px 10px rgba(31,157,85,0.2) !important;
-}
-div[data-testid="stFileUploaderDropzone"] {
-    border-radius: 12px !important; background: #FAFBFF !important;
-    border: 2px dashed #C3C9E6 !important;
-}
-</style>
-"""
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-
-NAV_PAGES = [("People Leads","👤"), ("Business Leads","🏢"), ("Regarding Reports","📊")]
-
-if "current_page" not in st.session_state:
-    st.session_state.current_page = "People Leads"
+NAV_PAGES = [("List Cleaner", "📋"), ("Business Leads", "🏢")]
 
 with st.sidebar:
-    st.markdown("## 📋 Campaign Organizer")
+    st.markdown("## 📋 List Cleaner")
     st.divider()
     for name, icon in NAV_PAGES:
         is_active = st.session_state.current_page == name
         if st.button(f"{icon}  {name}", key=f"nav_{name}",
                      type="primary" if is_active else "secondary",
-                     width='stretch'):
+                     use_container_width=True):
             st.session_state.current_page = name
             st.rerun()
 
-page = st.session_state.current_page
-if page == "People Leads":
-    page_people_leads()
-elif page == "Business Leads":
-    page_business_leads()
+if st.session_state.current_page == "List Cleaner":
+    page_sales_mls()
 else:
-    page_reports()
+    page_business_leads()
