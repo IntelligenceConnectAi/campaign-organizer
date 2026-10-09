@@ -3,6 +3,7 @@ import pandas as pd
 import csv
 import os
 import io
+import re
 import zipfile
 import math
 import warnings
@@ -41,10 +42,12 @@ DEAL_TYPES = [
     "TEARDOWN","INFILL LOT","LARGE ACREAGE","BUILDER LOT",
 ]
 
-# Business Leads use a single Phone / single Email column (e.g. Google Maps
-# scrapes) instead of the grouped Phone 1..5 format used by Sales/MLS.
-BIZ_PHONE_COL = "Phone"
-BIZ_EMAIL_COL = "Email"
+# Business Leads: phone/email columns are auto-detected. Any column whose FIRST
+# word is "Phone" is treated as a phone column (Phone, Phone 1, Phone Number...),
+# and any column whose first word is "Email" as an email column. Columns that
+# also contain one of the words below are metadata, not numbers/addresses.
+BIZ_PHONE_EXCLUDE_WORDS = {"type", "dnc", "status", "carrier", "valid", "verified", "line"}
+BIZ_EMAIL_EXCLUDE_WORDS = {"type", "status", "valid", "verified", "score"}
 
 TMP_MERGED       = "/tmp/merged.csv"
 TMP_SALES        = "/tmp/sales.csv"
@@ -147,6 +150,49 @@ def calc_week_ranges(total, n_splits):
         ranges.append(f"WK{i+1}: {start:,} – {end:,} ({end-start+1:,} contacts)")
     return ranges
 
+# ── BUSINESS LEADS HELPERS (column detection + phone normalization) ─────────
+def _col_words(col):
+    return str(col).strip().lower().replace("_", " ").replace("-", " ").split()
+
+def detect_phone_cols(columns):
+    """Columns whose first word is 'Phone' (Phone, Phone 1, Phone Number...)."""
+    out = []
+    for c in columns:
+        w = _col_words(c)
+        if w and w[0] in ("phone", "phones") and not (set(w) & BIZ_PHONE_EXCLUDE_WORDS):
+            out.append(c)
+    return out
+
+def detect_email_cols(columns):
+    """Columns whose first word is 'Email' (Email, Email 1, Email Address...)."""
+    out = []
+    for c in columns:
+        w = _col_words(c)
+        if not w:
+            continue
+        is_email = w[0] in ("email", "emails") or (w[0] == "e" and len(w) > 1 and w[1] == "mail")
+        if is_email and not (set(w) & BIZ_EMAIL_EXCLUDE_WORDS):
+            out.append(c)
+    return out
+
+def normalize_phone(val):
+    """Digits only, US leading '1' dropped, so '+1 (555) 123-4567',
+    '5551234567.0' and '15551234567' all become '5551234567' and are caught
+    as duplicates. Values with fewer than 10 digits are treated as junk."""
+    if not val:
+        return ""
+    s = str(val).strip()
+    if not s or s.lower() == "nan":
+        return ""
+    if re.fullmatch(r"\d+\.0+", s):
+        s = s.split(".")[0]
+    digits = re.sub(r"\D", "", s)
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) < 10:
+        return ""
+    return digits
+
 # ── MERGE + SPLIT SALES / MLS ────────────────────────────────────────────────
 def merge_and_split(uploaded_files):
     total_rows   = 0
@@ -194,32 +240,36 @@ def merge_and_split(uploaded_files):
 
     return total_rows, int(orig_phones), int(orig_emails)
 
-# ── MERGE (Business Leads: single Phone / Email columns, xlsx + csv) ────────
+# ── MERGE (Business Leads: auto-detected Phone*/Email* columns, xlsx + csv) ─
 def merge_biz_to_disk(uploaded_files):
-    total_rows   = 0
-    orig_phones  = 0
-    orig_emails  = 0
-    header_written = False
+    """Files can have different column names (Phone vs Phone 1 vs Phone Number),
+    so they're combined with a column union instead of appended blindly."""
+    frames = []
+    for uf in uploaded_files:
+        if uf.name.lower().endswith(".csv"):
+            df = pd.read_csv(uf, dtype=str)
+        else:
+            df = pd.read_excel(uf, dtype=str)
+        df.drop(columns=[c for c in DNC_COLS if c in df.columns], inplace=True)
+        frames.append(df)
 
-    with open(TMP_BIZ_MERGED, "w", newline="", encoding="utf-8") as out_f:
-        for uf in uploaded_files:
-            if uf.name.lower().endswith(".csv"):
-                df = pd.read_csv(uf, dtype=str)
-            else:
-                df = pd.read_excel(uf, dtype=str)
-            df.drop(columns=[c for c in DNC_COLS if c in df.columns], inplace=True)
-            if BIZ_PHONE_COL in df.columns:
-                orig_phones += df[BIZ_PHONE_COL].apply(
-                    lambda x: 1 if pd.notna(x) and str(x).strip() not in ("","nan") else 0).sum()
-            if BIZ_EMAIL_COL in df.columns:
-                orig_emails += df[BIZ_EMAIL_COL].apply(
-                    lambda x: 1 if pd.notna(x) and str(x).strip() not in ("","nan") else 0).sum()
-            df.to_csv(out_f, index=False, header=not header_written)
-            total_rows += len(df)
-            header_written = True
-            del df
+    df = pd.concat(frames, ignore_index=True, sort=False)
+    del frames
 
-    return total_rows, int(orig_phones), int(orig_emails)
+    def _count_non_empty(cols):
+        n = 0
+        for col in cols:
+            n += df[col].apply(
+                lambda x: 1 if pd.notna(x) and str(x).strip() not in ("", "nan") else 0).sum()
+        return int(n)
+
+    orig_phones = _count_non_empty(detect_phone_cols(df.columns))
+    orig_emails = _count_non_empty(detect_email_cols(df.columns))
+    total_rows  = len(df)
+
+    df.to_csv(TMP_BIZ_MERGED, index=False)
+    del df
+    return total_rows, orig_phones, orig_emails
 
 # ── GENERIC PROCESS FUNCTIONS (Sales/MLS: grouped Phone 1..5 columns) ───────
 def process_dialer_file(src_csv, out_csv, campaign_name):
@@ -311,68 +361,117 @@ def process_email_file(src_csv, out_csv, campaign_name):
     del df
     return total
 
-# ── BUSINESS LEADS PROCESS FUNCTIONS (single Phone / Email columns) ─────────
+# ── BUSINESS LEADS PROCESS FUNCTIONS (auto-detected columns + dedupe) ───────
+# Each returns (rows_written, duplicates_removed).
+
 def process_biz_dialer_file(src_csv, out_csv, campaign_name):
+    """One row per UNIQUE phone across all Phone* columns of the whole file."""
     df = pd.read_csv(src_csv, dtype=str)
-    other_cols  = [c for c in df.columns if c != BIZ_PHONE_COL]
+    phone_cols  = detect_phone_cols(df.columns)
+    other_cols  = [c for c in df.columns if c not in phone_cols]
     output_cols = ["Campaign Name", "Phone Number"] + other_cols
-    total = 0
+    seen, total, dupes = set(), 0, 0
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=output_cols)
         writer.writeheader()
         for _, row in df.iterrows():
-            phone_val = clean_phone(get_val(row, BIZ_PHONE_COL))
-            if not phone_val:
-                continue
-            new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val}
-            for col in other_cols:
-                new_row[col] = get_val(row, col)
-            writer.writerow(new_row)
-            total += 1
+            for pc in phone_cols:
+                phone_val = normalize_phone(get_val(row, pc))
+                if not phone_val:
+                    continue
+                if phone_val in seen:
+                    dupes += 1
+                    continue
+                seen.add(phone_val)
+                new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val}
+                for col in other_cols:
+                    new_row[col] = get_val(row, col)
+                writer.writerow(new_row)
+                total += 1
     del df
-    return total
+    return total, dupes
 
 def process_biz_sms_file(src_csv, out_csv, campaign_name):
+    """One row per UNIQUE phone (row's first valid email attached).
+    Rows with no valid phone but a valid email are kept once per unique email."""
     df = pd.read_csv(src_csv, dtype=str)
-    other_cols  = [c for c in df.columns if c not in (BIZ_PHONE_COL, BIZ_EMAIL_COL)]
+    phone_cols  = detect_phone_cols(df.columns)
+    email_cols  = detect_email_cols(df.columns)
+    other_cols  = [c for c in df.columns if c not in phone_cols and c not in email_cols]
     output_cols = ["Campaign Name", "Phone Number", "Email"] + other_cols
-    total = 0
+    seen_phones, seen_emails = set(), set()
+    total, dupes = 0, 0
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=output_cols)
         writer.writeheader()
         for _, row in df.iterrows():
-            phone_val = clean_phone(get_val(row, BIZ_PHONE_COL))
-            email_val = clean_email(get_val(row, BIZ_EMAIL_COL))
-            if not phone_val and not email_val:
-                continue
-            new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val, "Email": email_val}
-            for col in other_cols:
-                new_row[col] = get_val(row, col)
-            writer.writerow(new_row)
-            total += 1
+            row_email = ""
+            for ec in email_cols:
+                row_email = clean_email(get_val(row, ec))
+                if row_email:
+                    break
+            base = {col: get_val(row, col) for col in other_cols}
+
+            had_phone = False
+            for pc in phone_cols:
+                phone_val = normalize_phone(get_val(row, pc))
+                if not phone_val:
+                    continue
+                had_phone = True
+                if phone_val in seen_phones:
+                    dupes += 1
+                    continue
+                seen_phones.add(phone_val)
+                writer.writerow({"Campaign Name": campaign_name,
+                                 "Phone Number": phone_val,
+                                 "Email": row_email, **base})
+                total += 1
+
+            if not had_phone and row_email:
+                if row_email in seen_emails:
+                    dupes += 1
+                    continue
+                seen_emails.add(row_email)
+                writer.writerow({"Campaign Name": campaign_name,
+                                 "Phone Number": "",
+                                 "Email": row_email, **base})
+                total += 1
     del df
-    return total
+    return total, dupes
 
 def process_biz_email_file(src_csv, out_csv, campaign_name):
+    """One row per UNIQUE email across all Email* columns (row's first valid
+    phone attached)."""
     df = pd.read_csv(src_csv, dtype=str)
-    other_cols  = [c for c in df.columns if c not in (BIZ_PHONE_COL, BIZ_EMAIL_COL)]
+    phone_cols  = detect_phone_cols(df.columns)
+    email_cols  = detect_email_cols(df.columns)
+    other_cols  = [c for c in df.columns if c not in phone_cols and c not in email_cols]
     output_cols = ["Campaign Name", "Phone Number", "Email"] + other_cols
-    total = 0
+    seen, total, dupes = set(), 0, 0
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=output_cols)
         writer.writeheader()
         for _, row in df.iterrows():
-            email_val = clean_email(get_val(row, BIZ_EMAIL_COL))
-            if not email_val:
-                continue
-            phone_val = clean_phone(get_val(row, BIZ_PHONE_COL))
-            new_row = {"Campaign Name": campaign_name, "Phone Number": phone_val, "Email": email_val}
-            for col in other_cols:
-                new_row[col] = get_val(row, col)
-            writer.writerow(new_row)
-            total += 1
+            row_phone = ""
+            for pc in phone_cols:
+                row_phone = normalize_phone(get_val(row, pc))
+                if row_phone:
+                    break
+            base = {col: get_val(row, col) for col in other_cols}
+            for ec in email_cols:
+                email_val = clean_email(get_val(row, ec))
+                if not email_val:
+                    continue
+                if email_val in seen:
+                    dupes += 1
+                    continue
+                seen.add(email_val)
+                writer.writerow({"Campaign Name": campaign_name,
+                                 "Phone Number": row_phone,
+                                 "Email": email_val, **base})
+                total += 1
     del df
-    return total
+    return total, dupes
 
 # ── SPLIT (shared by Sales/MLS and Business Leads) ──────────────────────────
 def split_csv(tmp_path, channel, month, year, state, deal, n_splits, mls=False, mls_type=None):
@@ -436,6 +535,8 @@ def generate_report(month, year, state, deal,
             else:
                 add_bullet("Total Original Count of Emails", f"{orig_emails:,}")
                 add_bullet("Total Cleaned Count of Emails", f"{info['rows']:,}")
+            if "dupes" in info:
+                add_bullet("Duplicates Removed", f"{info['dupes']:,}")
             add_bullet("Week Range", " | ".join(wk_ranges) if wk_ranges else "N/A")
             add_bullet("List Type", deal)
             add_bullet("Round Progress", "[To be updated]")
@@ -882,6 +983,13 @@ def page_business_leads():
                 st.error(f"❌ Merge error: {e}")
                 st.stop()
 
+        # Show which columns were picked up so wrong detection is easy to spot
+        merged_cols = pd.read_csv(TMP_BIZ_MERGED, dtype=str, nrows=0).columns
+        det_phones  = detect_phone_cols(merged_cols)
+        det_emails  = detect_email_cols(merged_cols)
+        st.caption(f"📞 Phone columns detected: {', '.join(det_phones) if det_phones else 'none'}")
+        st.caption(f"📧 Email columns detected: {', '.join(det_emails) if det_emails else 'none'}")
+
         y = year.strip()
         s = state.strip().upper()
         d = deal.strip()
@@ -898,10 +1006,10 @@ def page_business_leads():
             campaign = make_campaign(ch, month, y, s, d)
             with st.spinner(f"Processing Business {key.upper()}... ⏳"):
                 try:
-                    rows = fn(TMP_BIZ_MERGED, out_tmp, campaign)
+                    rows, dupes = fn(TMP_BIZ_MERGED, out_tmp, campaign)
                     st.session_state.biz_results[key] = {
                         "channel": ch, "channel_key": key, "campaign": campaign,
-                        "rows": rows, "tmp": out_tmp, "splits": None,
+                        "rows": rows, "dupes": dupes, "tmp": out_tmp, "splits": None,
                     }
                 except Exception as e:
                     st.error(f"❌ Business {key} error: {e}")
@@ -961,7 +1069,8 @@ def page_business_leads():
             st.markdown("**🏢 Business Leads:**")
             for key, info in st.session_state.biz_results.items():
                 ck = info["channel_key"]
-                st.success(f"{ICONS[ck]} {LABELS[ck]}: **{info['rows']:,}**")
+                st.success(f"{ICONS[ck]} {LABELS[ck]}: **{info['rows']:,}**  "
+                           f"(duplicates removed: {info.get('dupes', 0):,})")
 
         st.divider()
         st.subheader("⬇️ Downloads")
@@ -981,7 +1090,7 @@ def page_business_leads():
             st.download_button(
                 label="📄 Download Report (Word)",
                 data=st.session_state.biz_report_buffer,
-                file_name=f"Report - Business Leads - {month} - {year} - {state.strip().upper()} - {deal.strip()}.docx",
+                file_name=f"Report - Business Leads - {month} - {year.strip()} - {state.strip().upper()} - {deal.strip()}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True,
                 key="dl_biz_report"
