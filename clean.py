@@ -392,52 +392,9 @@ def process_biz_dialer_file(src_csv, out_csv, campaign_name):
     return total, dupes
 
 def process_biz_sms_file(src_csv, out_csv, campaign_name):
-    """One row per UNIQUE phone (row's first valid email attached).
-    Rows with no valid phone but a valid email are kept once per unique email."""
-    df = pd.read_csv(src_csv, dtype=str)
-    phone_cols  = detect_phone_cols(df.columns)
-    email_cols  = detect_email_cols(df.columns)
-    other_cols  = [c for c in df.columns if c not in phone_cols and c not in email_cols]
-    output_cols = ["Campaign Name", "Phone Number", "Email"] + other_cols
-    seen_phones, seen_emails = set(), set()
-    total, dupes = 0, 0
-    with open(out_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=output_cols)
-        writer.writeheader()
-        for _, row in df.iterrows():
-            row_email = ""
-            for ec in email_cols:
-                row_email = clean_email(get_val(row, ec))
-                if row_email:
-                    break
-            base = {col: get_val(row, col) for col in other_cols}
-
-            had_phone = False
-            for pc in phone_cols:
-                phone_val = normalize_phone(get_val(row, pc))
-                if not phone_val:
-                    continue
-                had_phone = True
-                if phone_val in seen_phones:
-                    dupes += 1
-                    continue
-                seen_phones.add(phone_val)
-                writer.writerow({"Campaign Name": campaign_name,
-                                 "Phone Number": phone_val,
-                                 "Email": row_email, **base})
-                total += 1
-
-            if not had_phone and row_email:
-                if row_email in seen_emails:
-                    dupes += 1
-                    continue
-                seen_emails.add(row_email)
-                writer.writerow({"Campaign Name": campaign_name,
-                                 "Phone Number": "",
-                                 "Email": row_email, **base})
-                total += 1
-    del df
-    return total, dupes
+    """SMS follows exactly the same procedure as the Dialer: one row per
+    UNIQUE phone across all Phone* columns; rows without a phone are dropped."""
+    return process_biz_dialer_file(src_csv, out_csv, campaign_name)
 
 def process_biz_email_file(src_csv, out_csv, campaign_name):
     """One row per UNIQUE email across all Email* columns (row's first valid
