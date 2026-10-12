@@ -3,3 +3,5 @@ pandas
 openpyxl
 plotly
 python-docx
+gspread
+google-auth
