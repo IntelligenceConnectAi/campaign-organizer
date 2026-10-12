@@ -7,6 +7,9 @@ import re
 import zipfile
 import math
 import warnings
+from datetime import datetime
+import gspread
+from google.oauth2.service_account import Credentials
 from docx import Document
 from docx.shared import Pt, RGBColor
 warnings.filterwarnings("ignore")
@@ -48,6 +51,14 @@ DEAL_TYPES = [
 # also contain one of the words below are metadata, not numbers/addresses.
 BIZ_PHONE_EXCLUDE_WORDS = {"type", "dnc", "status", "carrier", "valid", "verified", "line"}
 BIZ_EMAIL_EXCLUDE_WORDS = {"type", "status", "valid", "verified", "score"}
+
+# Google Sheet sync (Business Leads)
+BIZ_SHEET_TAB = "Business Leads"
+BIZ_SHEET_HEADER = [
+    "Timestamp", "Month", "Year", "State", "Niche", "Channel",
+    "Campaign Name", "Total Rows Merged", "Original Phones",
+    "Original Emails", "Cleaned Count", "Duplicates Removed",
+]
 
 TMP_MERGED       = "/tmp/merged.csv"
 TMP_SALES        = "/tmp/sales.csv"
@@ -192,6 +203,40 @@ def normalize_phone(val):
     if len(digits) < 10:
         return ""
     return digits
+
+# ── GOOGLE SHEET SYNC (Business Leads) ──────────────────────────────────────
+def push_biz_to_sheet(month, year, state, niche):
+    """Har channel ke result ka ek row Google Sheet mein append karta hai."""
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]), scopes=scopes
+    )
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(st.secrets["gsheet"]["sheet_id"])
+
+    try:
+        ws = sh.worksheet(BIZ_SHEET_TAB)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=BIZ_SHEET_TAB, rows=1000,
+                              cols=len(BIZ_SHEET_HEADER))
+
+    if not ws.row_values(1):
+        ws.append_row(BIZ_SHEET_HEADER)
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    rows = []
+    for key, info in st.session_state.biz_results.items():
+        rows.append([
+            now, month, year, state, niche, info["channel"],
+            info["campaign"],
+            int(st.session_state.biz_total_merged),
+            int(st.session_state.biz_orig_phone_count),
+            int(st.session_state.biz_orig_email_count),
+            int(info["rows"]),
+            int(info.get("dupes", 0)),
+        ])
+    if rows:
+        ws.append_rows(rows, value_input_option="USER_ENTERED")
 
 # ── MERGE + SPLIT SALES / MLS ────────────────────────────────────────────────
 def merge_and_split(uploaded_files):
@@ -1007,6 +1052,14 @@ def page_business_leads():
                 )
             except Exception as e:
                 st.error(f"❌ Report error: {e}")
+
+        # ── PUSH TO GOOGLE SHEET ─────────────────────────────────────────────
+        with st.spinner("Updating Google Sheet... ⏳"):
+            try:
+                push_biz_to_sheet(month, y, s, d)
+                st.success("✅ Google Sheet updated")
+            except Exception as e:
+                st.warning(f"⚠️ Sheet update failed (files are still ready): {e}")
 
         st.session_state.biz_processed = True
 
